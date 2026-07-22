@@ -230,21 +230,24 @@ gu_selected = st.sidebar.multiselect("자치구 필터 (미선택 시 서울 전
 
 max_pages = st.sidebar.number_input(
     "연도·자치구 조합당 최대 페이지 수 (1페이지=최대 1,000건)",
-    min_value=1, max_value=500, value=10,
-    help="호출 횟수를 제한합니다. 값이 클수록 더 많은 데이터를 가져오지만 API 호출 수와 대기 시간이 늘어납니다.",
+    min_value=1, max_value=500, value=3,
+    help="자치구를 선택하지 않으면 서울시 25개 자치구를 각각 따로 조회하여 특정 구가 누락되지 않도록 합니다. "
+         "값이 클수록 더 많은 데이터를 가져오지만 (연도 수 × 자치구 수 × 이 값)만큼 API 호출이 늘어납니다.",
 )
 
 st.sidebar.caption(
     "⚠️ 서울 열린데이터광장 API는 1회 요청당 최대 1,000건, 일반 인증키 기준 일일 호출 횟수 제한이 있습니다. "
-    "넓은 기간을 조회할 때는 자치구를 함께 좁혀서 사용하는 것을 권장합니다."
+    "자치구를 선택하지 않으면 25개 구를 각각 조회하므로 호출 수가 (연도 수 × 25 × 페이지 수)만큼 늘어납니다. "
+    "기간이 넓다면 페이지 수를 낮추거나 자치구를 좁혀서 사용하세요."
 )
 
 if st.sidebar.button("🔄 새로고침 (캐시 지우고 다시 조회)", use_container_width=True):
     st.cache_data.clear()
 
+effective_gu_list = gu_selected if gu_selected else all_gu_names
 year_list = [str(y) for y in range(years[0], years[1] + 1)]
-with st.spinner("서울 열린데이터광장에서 실거래가 데이터를 불러오는 중..."):
-    rows, fetch_errors = fetch_all(api_key, tuple(year_list), tuple(gu_selected), max_pages)
+with st.spinner("서울 열린데이터광장에서 실거래가 데이터를 불러오는 중... (자치구별로 나눠서 조회합니다)"):
+    rows, fetch_errors = fetch_all(api_key, tuple(year_list), tuple(effective_gu_list), max_pages)
 df = rows_to_df(rows)
 
 if fetch_errors:
