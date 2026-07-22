@@ -35,6 +35,23 @@ CURRENT_YEAR = datetime.now().year
 EARLIEST_YEAR = 2006  # 실거래가 신고제도 시행연도(대략)
 BLDG_USG_OPTIONS = ["아파트", "단독다가구", "연립다세대", "오피스텔"]
 
+# 서울시 25개 자치구의 "법정동코드 기준 시군구코드"입니다.
+# ⚠️ 주의: seoul_gu.geojson 파일 안의 code 속성은 통계청(KOSTAT) 내부 일련번호라서
+#     서울 열린데이터광장 API가 쓰는 CGG_CD(법정동코드)와 값이 다릅니다.
+#     (예: geojson의 강동구 code='11250'이지만, 실제 API의 강동구 CGG_CD는 '11740'.)
+#     그래서 API 조회는 항상 아래의 공식 코드로 하고, 지도 매칭은 코드가 아닌
+#     "자치구 이름" 문자열로 맞춥니다. 이 값들은 실제 API 응답 예시(은평구 11380,
+#     강남구 11680, 구로구 11530)와도 일치하는 공식 코드입니다.
+OFFICIAL_GU_CODE = {
+    "종로구": "11110", "중구": "11140", "용산구": "11170", "성동구": "11200",
+    "광진구": "11215", "동대문구": "11230", "중랑구": "11260", "성북구": "11290",
+    "강북구": "11305", "도봉구": "11320", "노원구": "11350", "은평구": "11380",
+    "서대문구": "11410", "마포구": "11440", "양천구": "11470", "강서구": "11500",
+    "구로구": "11530", "금천구": "11545", "영등포구": "11560", "동작구": "11590",
+    "관악구": "11620", "서초구": "11650", "강남구": "11680", "송파구": "11710",
+    "강동구": "11740",
+}
+
 COLUMN_TYPES = {
     "RCPT_YR": "str", "CGG_CD": "str", "CGG_NM": "str", "STDG_CD": "str", "STDG_NM": "str",
     "LOTNO_SE": "str", "LOTNO_SE_NM": "str", "MNO": "str", "SNO": "str", "BLDG_NM": "str",
@@ -123,23 +140,37 @@ def fetch_year(api_key, year, cgg_cd, max_pages, progress_cb=None):
 
 @st.cache_data(show_spinner=False, ttl=6 * 3600)
 def fetch_all(api_key, years, gu_cd_list, max_pages_per_combo):
-    """연도 x 자치구코드(CGG_CD) 조합으로 데이터를 모아 리스트로 반환."""
+    """연도 x 자치구코드(CGG_CD) 조합으로 데이터를 모아 리스트로 반환.
+    반환값: (전체 행 리스트, 에러 메시지 리스트, 자치구코드별 마지막 에러 메시지 dict)
+    - 자치구별 에러를 따로 남겨서, "거래가 0건"이 진짜 데이터가 없는 건지
+      아니면 API 호출이 실패한 건지 화면에서 바로 구분할 수 있게 합니다.
+    """
     all_rows = []
     combos = [(y, g) for y in years for g in (gu_cd_list if gu_cd_list else [""])]
     errors = []
+    gu_last_error = {}  # {자치구코드: "마지막 에러 메시지"} - 실제로 API 호출이 실패했던 구만 기록
     prog = st.progress(0.0, text="데이터 수집 준비 중...")
     n = len(combos)
     for i, (y, g) in enumerate(combos):
         label = f"{y}년" + (f" · 자치구코드 {g}" if g else " · 서울 전체")
         prog.progress((i) / max(n, 1), text=f"수집 중: {label} ({i+1}/{n})")
+
         rows, total, err = fetch_year(api_key, y, g, max_pages_per_combo)
         if err:
+            # 일시적인 오류(트래픽 제한, 서버 지연 등)일 수 있으니 잠깐 쉬었다가 한 번 더 시도
+            time.sleep(1.0)
+            rows, total, err = fetch_year(api_key, y, g, max_pages_per_combo)
+
+        if err:
             errors.append(f"{label}: {err}")
+            if g:
+                gu_last_error[g] = err
         all_rows.extend(rows)
+        time.sleep(0.1)  # 자치구별 호출 사이에 짧게 쉬어서 순간적인 트래픽 제한을 피함
     prog.progress(1.0, text="수집 완료")
     time.sleep(0.2)
     prog.empty()
-    return all_rows, errors
+    return all_rows, errors, gu_last_error
 
 
 def rows_to_df(rows):
@@ -194,8 +225,7 @@ years = st.sidebar.slider(
          "범위가 넓을수록 호출 횟수와 시간이 크게 늘어납니다.",
 )
 
-_gu_features = load_gu_geojson()["features"]
-gu_name_to_code = {f["properties"]["name"]: f["properties"]["code"] for f in _gu_features}
+gu_name_to_code = OFFICIAL_GU_CODE
 all_gu_names = sorted(gu_name_to_code.keys())
 gu_selected = st.sidebar.multiselect("자치구 필터 (미선택 시 서울 전체)", options=all_gu_names, default=[])
 
@@ -224,17 +254,30 @@ else:
 
 year_list = [str(y) for y in range(years[0], years[1] + 1)]
 with st.spinner("서울 열린데이터광장에서 실거래가 데이터를 불러오는 중... (자치구별로 나눠서 조회합니다)"):
-    rows, fetch_errors = fetch_all(api_key, tuple(year_list), tuple(effective_gu_cd_list), max_pages)
+    rows, fetch_errors, gu_last_error = fetch_all(api_key, tuple(year_list), tuple(effective_gu_cd_list), max_pages)
 df = rows_to_df(rows)
 
+code_to_name = {v: k for k, v in OFFICIAL_GU_CODE.items()}
+gu_error_by_name = {code_to_name.get(cd, cd): err for cd, err in gu_last_error.items()}
+
+if gu_last_error:
+    failed_names = ", ".join(sorted(code_to_name.get(cd, cd) for cd in gu_last_error))
+    st.warning(
+        f"⚠️ 아래 자치구는 실제로 거래가 없는 게 아니라 **API 호출 자체가 실패**해서 0건으로 보였을 수 있습니다: "
+        f"**{failed_names}**\n\n"
+        "인증키의 일일 호출 한도를 초과했거나, 순간적으로 서버 응답이 지연됐을 가능성이 있습니다. "
+        "아래 오류 상세를 확인하고, 잠시 후 '🔄 새로고침' 버튼으로 다시 시도해보세요."
+    )
+
 if fetch_errors:
-    with st.expander(f"⚠️ 일부 구간 수집 중 오류 발생 ({len(fetch_errors)}건) - 클릭해서 보기"):
+    with st.expander(f"⚠️ 수집 중 오류 발생 ({len(fetch_errors)}건) - 클릭해서 자세히 보기", expanded=bool(gu_last_error)):
         for e in fetch_errors:
             st.write("- ", e)
 
 if df.empty:
     st.warning("조회된 데이터가 없습니다. 조건을 조정한 뒤 다시 시도해주세요.")
     st.stop()
+
 
 # 취소 거래 제외 옵션
 exclude_cancelled = st.sidebar.checkbox("취소된 거래 제외", value=True)
@@ -273,34 +316,38 @@ with tab_map_gu:
     st.subheader("자치구(CGG_NM)별 물건금액 지도 · 순위")
 
     geojson = load_gu_geojson()
-    all_gu_df = pd.DataFrame(
-        [{"CGG_CD": f["properties"]["code"], "CGG_NM": f["properties"]["name"]} for f in geojson["features"]]
-    )
+    all_gu_df = pd.DataFrame({"CGG_NM": sorted(OFFICIAL_GU_CODE.keys())})
 
     computed = (
-        work_df.groupby(["CGG_CD", "CGG_NM"])["PRICE_EOK"]
+        work_df.groupby("CGG_NM")["PRICE_EOK"]
         .agg(median="median", count="count", mean="mean", max="max", min="min")
         .reset_index()
     )
     # 서울시 25개 자치구 전체를 항상 표시 (데이터가 없는 구는 결측으로 표시)
-    gu_stat = all_gu_df.merge(computed[["CGG_CD", "median", "count", "mean", "min", "max"]],
-                               on="CGG_CD", how="left")
+    # ⚠️ geojson의 code 속성이 API의 CGG_CD와 값이 달라서(주석 참고), 코드가 아니라
+    #    "자치구 이름" 문자열 기준으로 지도/표를 맞춥니다.
+    gu_stat = all_gu_df.merge(computed[["CGG_NM", "median", "count", "mean", "min", "max"]],
+                               on="CGG_NM", how="left")
     gu_stat["count"] = gu_stat["count"].fillna(0).astype(int)
     gu_stat["rank_median"] = gu_stat["median"].rank(ascending=False, method="min")
+    # 거래 0건이 "진짜 데이터 없음"인지 "API 호출 실패"인지 구분해서 표에 남깁니다.
+    gu_stat["비고"] = gu_stat["CGG_NM"].map(
+        lambda nm: "⚠️ 조회 실패(재시도 필요)" if nm in gu_error_by_name else ""
+    )
 
     n_missing = gu_stat["median"].isna().sum()
     if n_missing:
         st.caption(f"※ {n_missing}개 자치구는 현재 조건에서 거래 데이터가 없어 회색으로 표시됩니다.")
 
     fig = px.choropleth_mapbox(
-        gu_stat, geojson=geojson, locations="CGG_CD", color="median",
-        featureidkey="properties.code",
+        gu_stat, geojson=geojson, locations="CGG_NM", color="median",
+        featureidkey="properties.name",
         color_continuous_scale="YlOrRd",
         mapbox_style="carto-positron",
         zoom=9.5, center={"lat": 37.5546, "lon": 126.9706},
         opacity=0.8,
         hover_name="CGG_NM",
-        hover_data={"CGG_CD": False, "rank_median": True, "median": ":.2f", "mean": ":.2f",
+        hover_data={"rank_median": True, "median": ":.2f", "mean": ":.2f",
                     "max": ":.2f", "min": ":.2f", "count": True},
         labels={"median": "중위가격(억원)", "rank_median": "중위가 순위"},
     )
@@ -334,7 +381,7 @@ with tab_map_gu:
     with st.expander("서울시 25개 자치구 전체 표 보기"):
         st.dataframe(
             gu_stat.sort_values("median", ascending=False, na_position="last")
-            [["rank_median", "CGG_NM", "count", "median", "mean", "min", "max"]]
+            [["rank_median", "CGG_NM", "count", "median", "mean", "min", "max", "비고"]]
             .rename(columns={"rank_median": "순위", "CGG_NM": "자치구", "count": "거래건수", "median": "중위가(억)",
                               "mean": "평균가(억)", "min": "최소가(억)", "max": "최대가(억)"}),
             use_container_width=True, hide_index=True,
