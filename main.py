@@ -48,10 +48,12 @@ COLUMN_TYPES = {
 # --------------------------------------------------------------------------------------
 # API 호출 관련 함수
 # --------------------------------------------------------------------------------------
-def build_url(api_key, start, end, rcpt_yr="", cgg_nm=""):
-    """포지셔널 옵션 인자 중 앞부분(RCPT_YR, CGG_NM)만 사용, 뒤는 생략."""
+def build_url(api_key, start, end, rcpt_yr="", cgg_cd=""):
+    """포지셔널 옵션 인자 중 앞부분(RCPT_YR, CGG_CD)만 사용, 뒤는 생략.
+    CGG_NM 대신 CGG_CD를 쓰는 이유: RCPT_YR 바로 다음 자리라 중간에 빈 칸이
+    생기지 않아 자치구 필터가 훨씬 안정적으로 동작합니다."""
     parts = [api_key, "json", SERVICE, str(start), str(end)]
-    tail = [str(rcpt_yr), "", str(cgg_nm)]
+    tail = [str(rcpt_yr), str(cgg_cd)]
     while tail and tail[-1] == "":
         tail.pop()
     parts += tail
@@ -79,7 +81,7 @@ def _parse_response(data):
     return rows, total, None
 
 
-def fetch_year(api_key, year, cgg_nm, max_pages, progress_cb=None):
+def fetch_year(api_key, year, cgg_cd, max_pages, progress_cb=None):
     """특정 연도(+구) 데이터를 페이지네이션으로 모두 가져옴."""
     rows_all = []
     start = 1
@@ -87,12 +89,12 @@ def fetch_year(api_key, year, cgg_nm, max_pages, progress_cb=None):
     total_count = None
     while True:
         end = start + MAX_PER_CALL - 1
-        url = build_url(api_key, start, end, rcpt_yr=year, cgg_nm=cgg_nm)
+        url = build_url(api_key, start, end, rcpt_yr=year, cgg_cd=cgg_cd)
         try:
             resp = requests.get(url, timeout=25)
             data = resp.json()
         except Exception as e:
-            return rows_all, total_count, f"요청 실패({year}년 {cgg_nm}): {e}"
+            return rows_all, total_count, f"요청 실패({year}년 {cgg_cd}): {e}"
 
         rows, total_count_new, err = _parse_response(data)
         if err:
@@ -106,7 +108,7 @@ def fetch_year(api_key, year, cgg_nm, max_pages, progress_cb=None):
         rows_all.extend(rows)
         page += 1
         if progress_cb:
-            progress_cb(year, cgg_nm, page, len(rows_all), total_count)
+            progress_cb(year, cgg_cd, page, len(rows_all), total_count)
 
         if len(rows) < MAX_PER_CALL:
             break
@@ -120,15 +122,15 @@ def fetch_year(api_key, year, cgg_nm, max_pages, progress_cb=None):
 
 
 @st.cache_data(show_spinner=False, ttl=6 * 3600)
-def fetch_all(api_key, years, gu_list, max_pages_per_combo):
-    """연도 x 자치구 조합으로 데이터를 모아 DataFrame으로 반환."""
+def fetch_all(api_key, years, gu_cd_list, max_pages_per_combo):
+    """연도 x 자치구코드(CGG_CD) 조합으로 데이터를 모아 리스트로 반환."""
     all_rows = []
-    combos = [(y, g) for y in years for g in (gu_list if gu_list else [""])]
+    combos = [(y, g) for y in years for g in (gu_cd_list if gu_cd_list else [""])]
     errors = []
     prog = st.progress(0.0, text="데이터 수집 준비 중...")
     n = len(combos)
     for i, (y, g) in enumerate(combos):
-        label = f"{y}년" + (f" · {g}" if g else " · 서울 전체")
+        label = f"{y}년" + (f" · 자치구코드 {g}" if g else " · 서울 전체")
         prog.progress((i) / max(n, 1), text=f"수집 중: {label} ({i+1}/{n})")
         rows, total, err = fetch_year(api_key, y, g, max_pages_per_combo)
         if err:
@@ -155,39 +157,6 @@ def rows_to_df(rows):
     # 취소된 거래 제외 (RTRCN_DAY가 채워져 있으면 취소건)
     df["IS_CANCELLED"] = df["RTRCN_DAY"].fillna("").astype(str).str.strip() != ""
     return df
-
-
-# --------------------------------------------------------------------------------------
-# 지오코딩 (법정동 중심좌표) - Nominatim(OpenStreetMap) 사용, 결과 캐시
-# --------------------------------------------------------------------------------------
-@st.cache_data(show_spinner=False, ttl=30 * 24 * 3600)
-def geocode_dong(gu_nm, dong_nm):
-    query = f"대한민국 서울특별시 {gu_nm} {dong_nm}"
-    url = "https://nominatim.openstreetmap.org/search"
-    params = {"q": query, "format": "json", "countrycodes": "kr", "limit": 1}
-    headers = {"User-Agent": "seoul-realestate-dashboard/1.0"}
-    try:
-        r = requests.get(url, params=params, headers=headers, timeout=10)
-        js = r.json()
-        if js:
-            return float(js[0]["lat"]), float(js[0]["lon"])
-    except Exception:
-        pass
-    return None, None
-
-
-def geocode_many(pairs):
-    """pairs: [(gu, dong), ...] 유니크 목록. 진행바 표시하며 순차 지오코딩(Nominatim 정책상 1건/초)."""
-    results = {}
-    prog = st.progress(0.0, text="법정동 좌표 조회 중 (최초 1회, 다소 시간이 걸립니다)")
-    n = len(pairs)
-    for i, (gu, dong) in enumerate(pairs):
-        lat, lon = geocode_dong(gu, dong)
-        results[(gu, dong)] = (lat, lon)
-        prog.progress((i + 1) / max(n, 1), text=f"좌표 조회 중... {gu} {dong} ({i+1}/{n})")
-        time.sleep(1.0)
-    prog.empty()
-    return results
 
 
 @st.cache_data(show_spinner=False)
@@ -225,7 +194,9 @@ years = st.sidebar.slider(
          "범위가 넓을수록 호출 횟수와 시간이 크게 늘어납니다.",
 )
 
-all_gu_names = sorted([f["properties"]["name"] for f in load_gu_geojson()["features"]])
+_gu_features = load_gu_geojson()["features"]
+gu_name_to_code = {f["properties"]["name"]: f["properties"]["code"] for f in _gu_features}
+all_gu_names = sorted(gu_name_to_code.keys())
 gu_selected = st.sidebar.multiselect("자치구 필터 (미선택 시 서울 전체)", options=all_gu_names, default=[])
 
 max_pages = st.sidebar.number_input(
@@ -244,10 +215,16 @@ st.sidebar.caption(
 if st.sidebar.button("🔄 새로고침 (캐시 지우고 다시 조회)", use_container_width=True):
     st.cache_data.clear()
 
-effective_gu_list = gu_selected if gu_selected else all_gu_names
+# 자치구 필터는 화면엔 이름(예: 강남구)으로 보여주지만, API 호출은 코드(CGG_CD)로 합니다.
+# (이름을 그대로 쓰면 RCPT_YR과 CGG_NM 사이에 빈 칸이 생겨 필터가 제대로 안 먹는 문제가 있었습니다.)
+if gu_selected:
+    effective_gu_cd_list = [gu_name_to_code[nm] for nm in gu_selected]
+else:
+    effective_gu_cd_list = list(gu_name_to_code.values())
+
 year_list = [str(y) for y in range(years[0], years[1] + 1)]
 with st.spinner("서울 열린데이터광장에서 실거래가 데이터를 불러오는 중... (자치구별로 나눠서 조회합니다)"):
-    rows, fetch_errors = fetch_all(api_key, tuple(year_list), tuple(effective_gu_list), max_pages)
+    rows, fetch_errors = fetch_all(api_key, tuple(year_list), tuple(effective_gu_cd_list), max_pages)
 df = rows_to_df(rows)
 
 if fetch_errors:
@@ -283,134 +260,88 @@ c5.metric("자치구 수", f"{work_df['CGG_NM'].nunique()} 개")
 
 st.markdown("---")
 
-tab_map_dong, tab_map_gu, tab_year, tab_usg, tab_floor, tab_narrative, tab_raw = st.tabs(
-    ["🗺️ 법정동별 지도", "🗺️ 자치구별 지도", "🏗️ 건축년도별 가격", "🏢 건물용도별 가격",
+tab_map_gu, tab_year, tab_usg, tab_floor, tab_narrative, tab_raw = st.tabs(
+    ["🗺️ 자치구별 지도 · 순위", "🏗️ 건축년도별 가격", "🏢 건물용도별 가격",
      "🏬 층-가격 관계", "📅 연도별 특징", "📄 원본 데이터"]
 )
 
 # --------------------------------------------------------------------------------------
-# 1) 법정동별 중위가격 지도
-# --------------------------------------------------------------------------------------
-with tab_map_dong:
-    st.subheader("법정동(STDG_NM)별 물건금액 중위값 지도")
-    st.caption("법정동 단위 좌표는 OpenStreetMap Nominatim으로 조회하며, 최초 조회 시 다소 시간이 걸릴 수 있습니다. "
-               "표시 법정동 수를 제한하여 조회 시간을 줄일 수 있습니다.")
-    top_n_dong = st.select_slider(
-        "거래건수 상위 몇 개 법정동을 지도에 표시할까요?",
-        options=[30, 75, 150, 225, 300],
-        value=150,
-        key="topn_dong",
-    )
-    show_dong_map = st.button("🗺️ 법정동별 중위가격 지도 보기", key="btn_dong_map")
-
-    if show_dong_map:
-        dong_stat = (
-            work_df.groupby(["CGG_NM", "STDG_NM"])["PRICE_EOK"]
-            .agg(median="median", count="count", mean="mean", max="max", min="min")
-            .reset_index()
-            .sort_values("count", ascending=False)
-            .head(top_n_dong)
-        )
-        pairs = list(zip(dong_stat["CGG_NM"], dong_stat["STDG_NM"]))
-        coords = geocode_many(pairs)
-        dong_stat["lat"] = [coords.get((g, d), (None, None))[0] for g, d in pairs]
-        dong_stat["lon"] = [coords.get((g, d), (None, None))[1] for g, d in pairs]
-        dong_stat = dong_stat.dropna(subset=["lat", "lon"])
-
-        if dong_stat.empty:
-            st.warning("좌표를 조회하지 못했습니다. 잠시 후 다시 시도해주세요.")
-        else:
-            fig = px.scatter_mapbox(
-                dong_stat, lat="lat", lon="lon",
-                size="count", color="median",
-                color_continuous_scale="YlOrRd",
-                size_max=32, zoom=10,
-                hover_name="STDG_NM",
-                hover_data={"CGG_NM": True, "median": ":.2f", "mean": ":.2f",
-                            "max": ":.2f", "min": ":.2f", "count": True, "lat": False, "lon": False},
-                labels={"median": "중위가격(억원)"},
-                center={"lat": 37.5546, "lon": 126.9706},
-            )
-            fig.update_layout(mapbox_style="carto-positron", height=650, margin=dict(l=0, r=0, t=10, b=0))
-            st.plotly_chart(fig, use_container_width=True)
-            st.dataframe(
-                dong_stat[["CGG_NM", "STDG_NM", "count", "median", "mean", "min", "max"]]
-                .rename(columns={"CGG_NM": "자치구", "STDG_NM": "법정동", "count": "거래건수",
-                                  "median": "중위가(억)", "mean": "평균가(억)", "min": "최소가(억)", "max": "최대가(억)"}),
-                use_container_width=True, hide_index=True,
-            )
-
-# --------------------------------------------------------------------------------------
-# 2) 자치구별 중위가격 지도
+# 1) 자치구별 중위가격 지도 + 상위/하위 5개 순위표
+#    (법정동 단위 집계는 빼고, 자치구 단위로만 집계 → 외부 좌표 조회 없이 즉시 계산됩니다)
 # --------------------------------------------------------------------------------------
 with tab_map_gu:
-    st.subheader("자치구(CGG_NM)별 물건금액 중위값 지도")
-    show_gu_map = st.button("🗺️ 자치구별 중위가격 지도 보기", key="btn_gu_map")
+    st.subheader("자치구(CGG_NM)별 물건금액 지도 · 순위")
 
-    if show_gu_map:
-        geojson = load_gu_geojson()
-        all_gu_df = pd.DataFrame(
-            [{"CGG_CD": f["properties"]["code"], "CGG_NM": f["properties"]["name"]} for f in geojson["features"]]
-        )
+    geojson = load_gu_geojson()
+    all_gu_df = pd.DataFrame(
+        [{"CGG_CD": f["properties"]["code"], "CGG_NM": f["properties"]["name"]} for f in geojson["features"]]
+    )
 
-        computed = (
-            work_df.groupby(["CGG_CD", "CGG_NM"])["PRICE_EOK"]
-            .agg(median="median", count="count", mean="mean", max="max", min="min")
-            .reset_index()
-        )
-        # 서울시 25개 자치구 전체를 항상 표시 (데이터가 없는 구는 결측으로 표시)
-        gu_stat = all_gu_df.merge(computed[["CGG_CD", "median", "count", "mean", "min", "max"]],
-                                   on="CGG_CD", how="left")
-        gu_stat["count"] = gu_stat["count"].fillna(0).astype(int)
-        gu_stat["rank"] = gu_stat["median"].rank(ascending=False, method="min")
+    computed = (
+        work_df.groupby(["CGG_CD", "CGG_NM"])["PRICE_EOK"]
+        .agg(median="median", count="count", mean="mean", max="max", min="min")
+        .reset_index()
+    )
+    # 서울시 25개 자치구 전체를 항상 표시 (데이터가 없는 구는 결측으로 표시)
+    gu_stat = all_gu_df.merge(computed[["CGG_CD", "median", "count", "mean", "min", "max"]],
+                               on="CGG_CD", how="left")
+    gu_stat["count"] = gu_stat["count"].fillna(0).astype(int)
+    gu_stat["rank_median"] = gu_stat["median"].rank(ascending=False, method="min")
 
-        n_missing = gu_stat["median"].isna().sum()
-        if n_missing:
-            st.caption(f"※ {n_missing}개 자치구는 현재 조건에서 거래 데이터가 없어 회색으로 표시됩니다.")
+    n_missing = gu_stat["median"].isna().sum()
+    if n_missing:
+        st.caption(f"※ {n_missing}개 자치구는 현재 조건에서 거래 데이터가 없어 회색으로 표시됩니다.")
 
-        fig = px.choropleth_mapbox(
-            gu_stat, geojson=geojson, locations="CGG_CD", color="median",
-            featureidkey="properties.code",
-            color_continuous_scale="YlOrRd",
-            mapbox_style="carto-positron",
-            zoom=9.5, center={"lat": 37.5546, "lon": 126.9706},
-            opacity=0.8,
-            hover_name="CGG_NM",
-            hover_data={"CGG_CD": False, "rank": True, "median": ":.2f", "mean": ":.2f",
-                        "max": ":.2f", "min": ":.2f", "count": True},
-            labels={"median": "중위가격(억원)", "rank": "가격순위"},
-        )
-        fig.update_traces(marker_line_width=1, marker_line_color="white")
-        fig.update_layout(height=650, margin=dict(l=0, r=0, t=10, b=0),
-                           coloraxis_colorbar=dict(title="중위가격(억원)"))
-        st.plotly_chart(fig, use_container_width=True)
+    fig = px.choropleth_mapbox(
+        gu_stat, geojson=geojson, locations="CGG_CD", color="median",
+        featureidkey="properties.code",
+        color_continuous_scale="YlOrRd",
+        mapbox_style="carto-positron",
+        zoom=9.5, center={"lat": 37.5546, "lon": 126.9706},
+        opacity=0.8,
+        hover_name="CGG_NM",
+        hover_data={"CGG_CD": False, "rank_median": True, "median": ":.2f", "mean": ":.2f",
+                    "max": ":.2f", "min": ":.2f", "count": True},
+        labels={"median": "중위가격(억원)", "rank_median": "중위가 순위"},
+    )
+    fig.update_traces(marker_line_width=1, marker_line_color="white")
+    fig.update_layout(height=600, margin=dict(l=0, r=0, t=10, b=0),
+                       coloraxis_colorbar=dict(title="중위가격(억원)"))
+    st.plotly_chart(fig, use_container_width=True)
 
-        ranked = gu_stat.dropna(subset=["median"]).sort_values("median", ascending=False)
-        col1, col2 = st.columns(2)
-        with col1:
-            top5 = ranked.head(5)
-            st.write("**중위가격 상위 5개 자치구**")
-            st.dataframe(top5[["rank", "CGG_NM", "median", "count"]].rename(
-                columns={"rank": "순위", "CGG_NM": "자치구", "median": "중위가(억)", "count": "거래건수"}),
-                hide_index=True, use_container_width=True)
-        with col2:
-            bottom5 = ranked.tail(5).sort_values("median", ascending=True)
-            st.write("**중위가격 하위 5개 자치구**")
-            st.dataframe(bottom5[["rank", "CGG_NM", "median", "count"]].rename(
-                columns={"rank": "순위", "CGG_NM": "자치구", "median": "중위가(억)", "count": "거래건수"}),
-                hide_index=True, use_container_width=True)
+    ranked = gu_stat.dropna(subset=["median"]).copy()
 
-        st.write("**서울시 25개 자치구 전체 순위**")
+    def show_top_bottom(col, label, fmt="{:.2f}"):
+        """col 기준으로 상위 5개 / 하위 5개 자치구 표를 나란히 보여주는 도우미 함수."""
+        st.markdown(f"**{label} 기준 자치구 순위**")
+        c1, c2 = st.columns(2)
+        sorted_df = ranked.sort_values(col, ascending=False)
+        with c1:
+            st.caption(f"🔼 {label} 상위 5개 자치구")
+            top5 = sorted_df.head(5)[["CGG_NM", col, "count"]].rename(
+                columns={"CGG_NM": "자치구", col: label, "count": "거래건수"})
+            st.dataframe(top5.style.format({label: fmt}), hide_index=True, use_container_width=True)
+        with c2:
+            st.caption(f"🔽 {label} 하위 5개 자치구")
+            bottom5 = sorted_df.tail(5).sort_values(col, ascending=True)[["CGG_NM", col, "count"]].rename(
+                columns={"CGG_NM": "자치구", col: label, "count": "거래건수"})
+            st.dataframe(bottom5.style.format({label: fmt}), hide_index=True, use_container_width=True)
+
+    show_top_bottom("median", "중위값(억원)")
+    show_top_bottom("max", "최댓값(억원)")
+    show_top_bottom("min", "최솟값(억원)")
+
+    with st.expander("서울시 25개 자치구 전체 표 보기"):
         st.dataframe(
             gu_stat.sort_values("median", ascending=False, na_position="last")
-            [["rank", "CGG_NM", "count", "median", "mean", "min", "max"]]
-            .rename(columns={"rank": "순위", "CGG_NM": "자치구", "count": "거래건수", "median": "중위가(억)",
+            [["rank_median", "CGG_NM", "count", "median", "mean", "min", "max"]]
+            .rename(columns={"rank_median": "순위", "CGG_NM": "자치구", "count": "거래건수", "median": "중위가(억)",
                               "mean": "평균가(억)", "min": "최소가(억)", "max": "최대가(억)"}),
             use_container_width=True, hide_index=True,
         )
 
 # --------------------------------------------------------------------------------------
-# 3) 건축년도별 가격
+# 2) 건축년도별 가격
 # --------------------------------------------------------------------------------------
 with tab_year:
     st.subheader("건축년도별 물건금액 중위값 · 최대 · 최소")
