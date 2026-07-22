@@ -43,28 +43,6 @@ COLUMN_TYPES = {
     "BLDG_USG": "str", "DCLR_SE": "str", "OPBIZ_RESTAGNT_SGG_NM": "str",
 }
 
-DEMO_ROWS = [
-    {"RCPT_YR": "2026", "CGG_CD": "11380", "CGG_NM": "은평구", "STDG_CD": "10900", "STDG_NM": "신사동",
-     "LOTNO_SE": "1", "LOTNO_SE_NM": "대지", "MNO": "0370", "SNO": "0000", "BLDG_NM": "은평신사두산위브",
-     "CTRT_DAY": "20260720", "THING_AMT": "76500", "ARCH_AREA": "84.997", "LAND_AREA": "0.000000",
-     "FLR": "4", "RGHT_SE": "", "RTRCN_DAY": "", "ARCH_YR": "2006", "BLDG_USG": "아파트",
-     "DCLR_SE": "중개거래", "OPBIZ_RESTAGNT_SGG_NM": "서울 은평구"},
-    {"RCPT_YR": "2026", "CGG_CD": "11680", "CGG_NM": "강남구", "STDG_CD": "10600", "STDG_NM": "대치동",
-     "LOTNO_SE": "1", "LOTNO_SE_NM": "대지", "MNO": "0316", "SNO": "0000", "BLDG_NM": "은마",
-     "CTRT_DAY": "20260720", "THING_AMT": "369500", "ARCH_AREA": "84.43", "LAND_AREA": "0.000000",
-     "FLR": "1", "RGHT_SE": "", "RTRCN_DAY": "", "ARCH_YR": "1979", "BLDG_USG": "아파트",
-     "DCLR_SE": "중개거래", "OPBIZ_RESTAGNT_SGG_NM": "서울 강남구"},
-    {"RCPT_YR": "2026", "CGG_CD": "11530", "CGG_NM": "구로구", "STDG_CD": "10700", "STDG_NM": "개봉동",
-     "LOTNO_SE": "1", "LOTNO_SE_NM": "대지", "MNO": "0342", "SNO": "0010", "BLDG_NM": "2차한샘하이빌1동",
-     "CTRT_DAY": "20260720", "THING_AMT": "10500", "ARCH_AREA": "42.76", "LAND_AREA": "23.000000",
-     "FLR": "-1", "RGHT_SE": "", "RTRCN_DAY": "", "ARCH_YR": "2002", "BLDG_USG": "연립다세대",
-     "DCLR_SE": "직거래", "OPBIZ_RESTAGNT_SGG_NM": ""},
-    {"RCPT_YR": "2026", "CGG_CD": "11380", "CGG_NM": "은평구", "STDG_CD": "10300", "STDG_NM": "불광동",
-     "LOTNO_SE": "1", "LOTNO_SE_NM": "대지", "MNO": "0281", "SNO": "0049", "BLDG_NM": "샹그리라",
-     "CTRT_DAY": "20260720", "THING_AMT": "17800", "ARCH_AREA": "29.06", "LAND_AREA": "41.170000",
-     "FLR": "4", "RGHT_SE": "", "RTRCN_DAY": "", "ARCH_YR": "2018", "BLDG_USG": "오피스텔",
-     "DCLR_SE": "중개거래", "OPBIZ_RESTAGNT_SGG_NM": "서울 은평구"},
-]
 
 
 # --------------------------------------------------------------------------------------
@@ -219,15 +197,25 @@ def load_gu_geojson():
 
 
 # --------------------------------------------------------------------------------------
-# 사이드바 - 데이터 수집 설정
+# 인증키 (Secrets에서만 로드 - 사이드바에 노출하지 않음)
 # --------------------------------------------------------------------------------------
-st.sidebar.title("🏠 데이터 불러오기")
+api_key = st.secrets.get("SEOUL_API_KEY", "") if hasattr(st, "secrets") else ""
 
-default_key = st.secrets.get("SEOUL_API_KEY", "") if hasattr(st, "secrets") else ""
-api_key = st.sidebar.text_input("서울 열린데이터광장 인증키", value=default_key, type="password",
-                                 help="https://data.seoul.go.kr 에서 발급받은 인증키를 입력하세요.")
+st.title("🏠 서울시 부동산 실거래가 대시보드")
+st.caption("데이터 출처: 서울 열린데이터광장 Open API — 부동산 실거래가 정보(tbLnOpendataRtmsV)")
 
-demo_mode = st.sidebar.checkbox("인증키 없이 샘플 데이터로 체험하기", value=(api_key == ""))
+if not api_key:
+    st.error(
+        "서울 열린데이터광장 인증키가 설정되어 있지 않습니다. "
+        "Streamlit Cloud의 **Settings → Secrets**에 아래와 같이 추가해주세요.\n\n"
+        "```toml\nSEOUL_API_KEY = \"발급받은_인증키\"\n```"
+    )
+    st.stop()
+
+# --------------------------------------------------------------------------------------
+# 사이드바 - 조회 조건 (인증키는 Secrets 사용, 화면에 노출하지 않음)
+# --------------------------------------------------------------------------------------
+st.sidebar.title("🔎 조회 조건")
 
 years = st.sidebar.slider(
     "계약연도(접수연도) 범위",
@@ -251,37 +239,17 @@ st.sidebar.caption(
     "넓은 기간을 조회할 때는 자치구를 함께 좁혀서 사용하는 것을 권장합니다."
 )
 
-load_clicked = st.sidebar.button("📥 데이터 불러오기", type="primary", use_container_width=True)
+if st.sidebar.button("🔄 새로고침 (캐시 지우고 다시 조회)", use_container_width=True):
+    st.cache_data.clear()
 
-if "df" not in st.session_state:
-    st.session_state.df = None
-    st.session_state.fetch_errors = []
+year_list = [str(y) for y in range(years[0], years[1] + 1)]
+with st.spinner("서울 열린데이터광장에서 실거래가 데이터를 불러오는 중..."):
+    rows, fetch_errors = fetch_all(api_key, tuple(year_list), tuple(gu_selected), max_pages)
+df = rows_to_df(rows)
 
-if load_clicked:
-    if demo_mode or not api_key:
-        st.session_state.df = rows_to_df(DEMO_ROWS)
-        st.session_state.fetch_errors = []
-        st.sidebar.info("샘플 데이터(5건)로 대시보드를 표시합니다.")
-    else:
-        year_list = [str(y) for y in range(years[0], years[1] + 1)]
-        rows, errors = fetch_all(api_key, tuple(year_list), tuple(gu_selected), max_pages)
-        df = rows_to_df(rows)
-        st.session_state.df = df
-        st.session_state.fetch_errors = errors
-
-df = st.session_state.df
-
-st.title("🏠 서울시 부동산 실거래가 대시보드")
-st.caption("데이터 출처: 서울 열린데이터광장 Open API — 부동산 실거래가 정보(tbLnOpendataRtmsV)")
-
-if df is None:
-    st.info("왼쪽 사이드바에서 인증키와 조회 조건을 설정한 뒤 **'데이터 불러오기'** 버튼을 눌러주세요. "
-            "(인증키가 없다면 '샘플 데이터로 체험하기'를 선택할 수 있습니다.)")
-    st.stop()
-
-if st.session_state.fetch_errors:
-    with st.expander(f"⚠️ 일부 구간 수집 중 오류 발생 ({len(st.session_state.fetch_errors)}건) - 클릭해서 보기"):
-        for e in st.session_state.fetch_errors:
+if fetch_errors:
+    with st.expander(f"⚠️ 일부 구간 수집 중 오류 발생 ({len(fetch_errors)}건) - 클릭해서 보기"):
+        for e in fetch_errors:
             st.write("- ", e)
 
 if df.empty:
@@ -324,7 +292,12 @@ with tab_map_dong:
     st.subheader("법정동(STDG_NM)별 물건금액 중위값 지도")
     st.caption("법정동 단위 좌표는 OpenStreetMap Nominatim으로 조회하며, 최초 조회 시 다소 시간이 걸릴 수 있습니다. "
                "표시 법정동 수를 제한하여 조회 시간을 줄일 수 있습니다.")
-    top_n_dong = st.slider("거래건수 상위 몇 개 법정동을 지도에 표시할까요?", 10, 300, 100, step=10, key="topn_dong")
+    top_n_dong = st.select_slider(
+        "거래건수 상위 몇 개 법정동을 지도에 표시할까요?",
+        options=[30, 75, 150, 225, 300],
+        value=150,
+        key="topn_dong",
+    )
     show_dong_map = st.button("🗺️ 법정동별 중위가격 지도 보기", key="btn_dong_map")
 
     if show_dong_map:
@@ -372,45 +345,63 @@ with tab_map_gu:
     show_gu_map = st.button("🗺️ 자치구별 중위가격 지도 보기", key="btn_gu_map")
 
     if show_gu_map:
-        gu_stat = (
+        geojson = load_gu_geojson()
+        all_gu_df = pd.DataFrame(
+            [{"CGG_CD": f["properties"]["code"], "CGG_NM": f["properties"]["name"]} for f in geojson["features"]]
+        )
+
+        computed = (
             work_df.groupby(["CGG_CD", "CGG_NM"])["PRICE_EOK"]
             .agg(median="median", count="count", mean="mean", max="max", min="min")
             .reset_index()
         )
-        geojson = load_gu_geojson()
+        # 서울시 25개 자치구 전체를 항상 표시 (데이터가 없는 구는 결측으로 표시)
+        gu_stat = all_gu_df.merge(computed[["CGG_CD", "median", "count", "mean", "min", "max"]],
+                                   on="CGG_CD", how="left")
+        gu_stat["count"] = gu_stat["count"].fillna(0).astype(int)
+        gu_stat["rank"] = gu_stat["median"].rank(ascending=False, method="min")
+
+        n_missing = gu_stat["median"].isna().sum()
+        if n_missing:
+            st.caption(f"※ {n_missing}개 자치구는 현재 조건에서 거래 데이터가 없어 회색으로 표시됩니다.")
+
         fig = px.choropleth_mapbox(
             gu_stat, geojson=geojson, locations="CGG_CD", color="median",
             featureidkey="properties.code",
             color_continuous_scale="YlOrRd",
             mapbox_style="carto-positron",
             zoom=9.5, center={"lat": 37.5546, "lon": 126.9706},
-            opacity=0.75,
+            opacity=0.8,
             hover_name="CGG_NM",
-            hover_data={"CGG_CD": False, "median": ":.2f", "mean": ":.2f",
+            hover_data={"CGG_CD": False, "rank": True, "median": ":.2f", "mean": ":.2f",
                         "max": ":.2f", "min": ":.2f", "count": True},
-            labels={"median": "중위가격(억원)"},
+            labels={"median": "중위가격(억원)", "rank": "가격순위"},
         )
-        fig.update_layout(height=650, margin=dict(l=0, r=0, t=10, b=0))
+        fig.update_traces(marker_line_width=1, marker_line_color="white")
+        fig.update_layout(height=650, margin=dict(l=0, r=0, t=10, b=0),
+                           coloraxis_colorbar=dict(title="중위가격(억원)"))
         st.plotly_chart(fig, use_container_width=True)
 
+        ranked = gu_stat.dropna(subset=["median"]).sort_values("median", ascending=False)
         col1, col2 = st.columns(2)
         with col1:
-            top5 = gu_stat.sort_values("median", ascending=False).head(5)
+            top5 = ranked.head(5)
             st.write("**중위가격 상위 5개 자치구**")
-            st.dataframe(top5[["CGG_NM", "median", "count"]].rename(
-                columns={"CGG_NM": "자치구", "median": "중위가(억)", "count": "거래건수"}),
+            st.dataframe(top5[["rank", "CGG_NM", "median", "count"]].rename(
+                columns={"rank": "순위", "CGG_NM": "자치구", "median": "중위가(억)", "count": "거래건수"}),
                 hide_index=True, use_container_width=True)
         with col2:
-            bottom5 = gu_stat.sort_values("median", ascending=True).head(5)
+            bottom5 = ranked.tail(5).sort_values("median", ascending=True)
             st.write("**중위가격 하위 5개 자치구**")
-            st.dataframe(bottom5[["CGG_NM", "median", "count"]].rename(
-                columns={"CGG_NM": "자치구", "median": "중위가(억)", "count": "거래건수"}),
+            st.dataframe(bottom5[["rank", "CGG_NM", "median", "count"]].rename(
+                columns={"rank": "순위", "CGG_NM": "자치구", "median": "중위가(억)", "count": "거래건수"}),
                 hide_index=True, use_container_width=True)
 
+        st.write("**서울시 25개 자치구 전체 순위**")
         st.dataframe(
-            gu_stat.sort_values("median", ascending=False)
-            [["CGG_NM", "count", "median", "mean", "min", "max"]]
-            .rename(columns={"CGG_NM": "자치구", "count": "거래건수", "median": "중위가(억)",
+            gu_stat.sort_values("median", ascending=False, na_position="last")
+            [["rank", "CGG_NM", "count", "median", "mean", "min", "max"]]
+            .rename(columns={"rank": "순위", "CGG_NM": "자치구", "count": "거래건수", "median": "중위가(억)",
                               "mean": "평균가(억)", "min": "최소가(억)", "max": "최대가(억)"}),
             use_container_width=True, hide_index=True,
         )
