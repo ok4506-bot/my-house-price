@@ -228,8 +228,9 @@ st.sidebar.title("🔎 조회 조건")
 
 years = st.sidebar.slider(
     "계약연도 범위", min_value=EARLIEST_YEAR, max_value=CURRENT_YEAR,
-    value=(CURRENT_YEAR - 2, CURRENT_YEAR),
-    help="기간이 넓을수록 예측 모델 학습에는 좋지만, API 호출 수와 대기 시간이 늘어납니다.",
+    value=(EARLIEST_YEAR, CURRENT_YEAR),
+    help="기본값은 2006~2026년 전체 기간입니다. 기간이 넓을수록 추세 그래프는 풍부해지지만, "
+         "API 호출 수와 대기 시간이 늘어납니다. 로딩이 너무 느리면 기간을 좁혀보세요.",
 )
 
 gu_selected = st.sidebar.multiselect(
@@ -239,7 +240,7 @@ gu_selected = st.sidebar.multiselect(
 
 max_pages = st.sidebar.number_input(
     "연도·자치구 조합당 최대 페이지 수 (1페이지=최대 1,000건)",
-    min_value=1, max_value=200, value=3,
+    min_value=1, max_value=200, value=5,
     help="값이 클수록 학습 데이터가 많아지지만 (연도 수 × 자치구 수 × 이 값)만큼 API 호출이 늘어납니다.",
 )
 
@@ -323,7 +324,31 @@ def predict_price_eok(cgg_nm, arch_area, flr, age):
 
 
 # --------------------------------------------------------------------
-# 8) R² 카드
+# 8) 특정 조건(자치구·면적·층·연식) 예측가 — 가장 먼저 보여주는 핵심 기능
+# --------------------------------------------------------------------
+st.markdown("---")
+st.subheader("🔮 특정 조건으로 아파트 가격 바로 예측하기")
+pick_gu3 = st.selectbox("자치구", sorted(OFFICIAL_GU_CODE.keys()), key="direct_gu")
+c1, c2, c3 = st.columns(3)
+with c1:
+    area = st.slider("건물면적(㎡)", min_value=20.0, max_value=250.0, value=84.0, step=1.0)
+with c2:
+    floor = st.slider("층", min_value=-3, max_value=50, value=10, step=1)
+with c3:
+    age = st.slider("연식(건축 후 경과년수)", min_value=0, max_value=60, value=15, step=1)
+
+pred_eok = predict_price_eok(pick_gu3, area, floor, age)
+st.markdown(
+    f"<div style='text-align:center; margin-top:1.0em;'>"
+    f"<span style='font-size:1.1em;'>🔮 {pick_gu3} · {area:.0f}㎡ · {floor}층 · 연식 {age}년 예측 가격</span><br>"
+    f"<span style='font-size:3.2em; font-weight:800; color:#e0522f;'>{pred_eok:.2f}억원</span>"
+    f"</div>",
+    unsafe_allow_html=True,
+)
+
+
+# --------------------------------------------------------------------
+# 9) R² 카드
 # --------------------------------------------------------------------
 st.markdown("---")
 r2_col, exp_col = st.columns([1, 3])
@@ -337,19 +362,20 @@ with exp_col:
 
 
 # --------------------------------------------------------------------------------------
-# 9) 자치구 · 법정동별 실거래가 추이 & 예측
-#    (매물 하나하나가 아니라, 구/동 단위로 연도별 중위값 추이를 보고 미래를 예측합니다)
+# 10) 자치구 · 법정동별 실거래가 추이 & 예측
+#    (매물 하나하나가 아니라, 구/동 단위로 2006~2026년 전체 연도별 중위값과 추세선을 보여줍니다)
 # --------------------------------------------------------------------------------------
 st.markdown("---")
 st.subheader("📈 자치구 · 법정동별 실거래가 추이 & 예측")
 st.caption(
-    "연도별 물건금액 중위값(억원)의 실제 흐름을 보여주고, 간단한 선형 추세선으로 "
-    "앞으로 몇 년의 가격을 함께 예측합니다. (실제=실선, 예측=점선)"
+    "2006년부터 2026년까지 연도별 물건금액 중위값(억원)을 점으로 표시하고, "
+    "전체 기간에 걸친 선형 추세선(로그 스케일)을 그은 뒤 앞으로 몇 년을 더 예측해서 이어 그립니다. "
+    "(추세선 실선=과거~현재, 점선=미래 예측)"
 )
 
 
 def yearly_median_table(df_subset):
-    """계약연도별 물건금액 중위값·거래건수를 구해서 표로 돌려줍니다."""
+    """계약연도별 물건금액 중위값·거래건수를 구해서 표로 돌려줍니다. (실제 데이터가 있는 연도만)"""
     g = (
         df_subset.groupby("CTRT_YEAR")["PRICE_EOK"]
         .agg(median="median", count="count")
@@ -360,29 +386,58 @@ def yearly_median_table(df_subset):
     return g.sort_values("CTRT_YEAR")
 
 
-def fit_year_trend_and_forecast(yearly_df, horizon):
-    """연도(x) -> log(중위가격)(y)로 아주 단순한 선형회귀 추세선을 만들고,
-    마지막 실제 연도 다음부터 horizon년 만큼 미래 가격을 예측합니다."""
+def fit_year_trend(yearly_df):
+    """연도(x) -> log(중위가격)(y)로 선형회귀 추세선을 학습합니다."""
     if len(yearly_df) < 2:
-        return None  # 추세선을 그리기엔 실제 연도별 데이터 포인트가 너무 적음
-
+        return None, None
     X_year = yearly_df[["CTRT_YEAR"]].to_numpy(dtype=float)
     y_log_price = np.log(yearly_df["median"].to_numpy(dtype=float))
-
     trend_model = LinearRegression()
     trend_model.fit(X_year, y_log_price)
     r2_in_sample = r2_score(y_log_price, trend_model.predict(X_year))
+    return trend_model, r2_in_sample
 
-    last_year = int(yearly_df["CTRT_YEAR"].max())
-    future_years = list(range(last_year + 1, last_year + 1 + horizon))
-    future_log_price = trend_model.predict(np.array(future_years, dtype=float).reshape(-1, 1))
-    future_price_eok = np.exp(future_log_price)
+
+def trend_line_series(trend_model, start_year, end_year):
+    """trend_model로 start_year부터 end_year까지 매년 예측 가격(억원)을 만들어줍니다."""
+    yrs = list(range(start_year, end_year + 1))
+    log_price = trend_model.predict(np.array(yrs, dtype=float).reshape(-1, 1))
+    return yrs, np.exp(log_price)
+
+
+def compute_region_highlights(sub_df, yearly_df):
+    """이 지역에서 가장 비싼 주택, 가장 싼 주택, 그리고 지역 가격 흐름을
+    가장 잘 따라가는(연도별 지역 중위가와 가장 차이가 적은) 대표 주택을 찾습니다."""
+    sub_df = sub_df.dropna(subset=["PRICE_EOK"])
+    if sub_df.empty:
+        return None
+
+    max_row = sub_df.loc[sub_df["PRICE_EOK"].idxmax()]
+    min_row = sub_df.loc[sub_df["PRICE_EOK"].idxmin()]
+
+    rep_name, rep_note = None, ""
+    if not yearly_df.empty:
+        year_to_median = dict(zip(yearly_df["CTRT_YEAR"], yearly_df["median"]))
+        tmp = sub_df.dropna(subset=["BLDG_NM", "CTRT_YEAR"]).copy()
+        tmp["지역중위가"] = tmp["CTRT_YEAR"].map(year_to_median)
+        tmp = tmp.dropna(subset=["지역중위가"])
+        tmp = tmp[tmp["BLDG_NM"].str.strip() != ""]
+        if not tmp.empty:
+            # 자신이 거래된 해의 지역 중위가격과 (로그 스케일로) 얼마나 차이나는지 평균 내서,
+            # 그 차이가 가장 작은 건물을 "지역 추세를 가장 잘 반영하는 대표 주택"으로 선정
+            tmp["편차"] = (np.log(tmp["PRICE_EOK"]) - np.log(tmp["지역중위가"])).abs()
+            building_dev = tmp.groupby("BLDG_NM")["편차"].mean().sort_values()
+            if len(building_dev):
+                rep_name = building_dev.index[0]
+                rep_note = f"(지역 중위가격과의 평균 차이: {building_dev.iloc[0]*100:.1f}%)"
 
     return {
-        "last_year": last_year,
-        "future_years": future_years,
-        "future_price_eok": future_price_eok,
-        "r2": r2_in_sample,
+        "max_name": (max_row.get("BLDG_NM") or "").strip() or "(건물명 미상)",
+        "max_price": max_row["PRICE_EOK"],
+        "min_name": (min_row.get("BLDG_NM") or "").strip() or "(건물명 미상)",
+        "min_price": min_row["PRICE_EOK"],
+        "rep_name": rep_name or "정보 부족",
+        "rep_note": rep_note,
     }
 
 
@@ -413,79 +468,94 @@ if not regions_selected:
     st.info("위에서 비교하고 싶은 자치구(또는 법정동)를 1개 이상 선택해주세요.")
 else:
     chart_rows = []
-    forecast_rows = []
+    yearly_by_region = {}
+    trend_r2_by_region = {}
+
     for region_name, sub_df in region_frames.items():
+        # 2006~2026년 전체 구간을 다 보여주기 위해, 실제 데이터가 있는 연도는 "실제" 점으로 표시
         yearly_df = yearly_median_table(sub_df)
+        yearly_by_region[region_name] = yearly_df
         for _, r in yearly_df.iterrows():
             chart_rows.append({
                 "지역": region_name, "연도": int(r["CTRT_YEAR"]),
-                "중위가(억원)": r["median"], "구분": "실제", "거래건수": int(r["count"]),
+                "가격(억원)": r["median"], "구분": "실제 중위가격", "거래건수": int(r["count"]),
             })
 
-        result = fit_year_trend_and_forecast(yearly_df, horizon)
-        if result is None:
-            st.caption(f"⚠️ **{region_name}**: 연도별 데이터 포인트가 부족해 추세 예측을 만들 수 없어요.")
+        trend_model, r2_trend = fit_year_trend(yearly_df)
+        if trend_model is None:
+            st.caption(f"⚠️ **{region_name}**: 연도별 데이터 포인트가 부족해 추세선을 만들 수 없어요.")
             continue
+        trend_r2_by_region[region_name] = r2_trend
 
-        # 예측 점선이 실제 실선과 끊기지 않고 이어지도록, 마지막 실제 연도 값을 예측 계열에도 하나 넣어줌
-        last_row = yearly_df[yearly_df["CTRT_YEAR"] == result["last_year"]].iloc[0]
-        chart_rows.append({
-            "지역": region_name, "연도": result["last_year"],
-            "중위가(억원)": last_row["median"], "구분": "예측", "거래건수": int(last_row["count"]),
-        })
-        for fy, fp in zip(result["future_years"], result["future_price_eok"]):
-            chart_rows.append({"지역": region_name, "연도": fy, "중위가(억원)": fp, "구분": "예측", "거래건수": None})
-            forecast_rows.append({
-                "지역": region_name, "연도": fy, "예측 중위가(억원)": round(float(fp), 2),
-                "추세선 적합도(R²)": round(result["r2"], 3),
-            })
+        first_year = int(yearly_df["CTRT_YEAR"].min())
+        last_year = int(yearly_df["CTRT_YEAR"].max())
+
+        # 추세선(실선): 실제 데이터가 있는 첫 해 ~ 마지막 해까지, 2006~2026년 전체를 아우르도록 계산
+        fit_years, fit_prices = trend_line_series(trend_model, min(EARLIEST_YEAR, first_year), last_year)
+        for yy, pp in zip(fit_years, fit_prices):
+            chart_rows.append({"지역": region_name, "연도": yy, "가격(억원)": pp,
+                                "구분": "추세선(적합)", "거래건수": None})
+
+        # 추세선(점선): 마지막 실제 연도부터 미래 예측 구간까지
+        fc_years, fc_prices = trend_line_series(trend_model, last_year, last_year + horizon)
+        for yy, pp in zip(fc_years, fc_prices):
+            chart_rows.append({"지역": region_name, "연도": yy, "가격(억원)": pp,
+                                "구분": "추세선(예측)", "거래건수": None})
 
     if chart_rows:
         chart_df = pd.DataFrame(chart_rows)
-        fig = px.line(
-            chart_df, x="연도", y="중위가(억원)", color="지역", line_dash="구분",
-            markers=True, hover_data={"거래건수": True},
-            labels={"중위가(억원)": "중위가격(억원)"},
+        fig = go.Figure()
+        colors = px.colors.qualitative.Set2
+        for i, region_name in enumerate(regions_selected):
+            color = colors[i % len(colors)]
+            reg_df = chart_df[chart_df["지역"] == region_name]
+
+            actual = reg_df[reg_df["구분"] == "실제 중위가격"].sort_values("연도")
+            fig.add_trace(go.Scatter(
+                x=actual["연도"], y=actual["가격(억원)"], mode="markers", name=f"{region_name}·실제",
+                marker=dict(size=9, color=color), legendgroup=region_name,
+            ))
+
+            fit_line = reg_df[reg_df["구분"] == "추세선(적합)"].sort_values("연도")
+            fig.add_trace(go.Scatter(
+                x=fit_line["연도"], y=fit_line["가격(억원)"], mode="lines", name=f"{region_name}·추세선",
+                line=dict(color=color, width=2), legendgroup=region_name,
+            ))
+
+            fc_line = reg_df[reg_df["구분"] == "추세선(예측)"].sort_values("연도")
+            fig.add_trace(go.Scatter(
+                x=fc_line["연도"], y=fc_line["가격(억원)"], mode="lines", name=f"{region_name}·예측",
+                line=dict(color=color, width=2, dash="dash"), legendgroup=region_name,
+            ))
+
+        fig.update_layout(
+            height=520, margin=dict(l=10, r=10, t=30, b=10),
+            xaxis_title="연도", yaxis_title="중위가격(억원)",
+            legend=dict(orientation="h", yanchor="bottom", y=1.02),
         )
-        fig.update_traces(selector=dict(mode="markers+lines"))
-        fig.update_layout(height=520, margin=dict(l=10, r=10, t=30, b=10),
-                           legend=dict(orientation="h", yanchor="bottom", y=1.02))
         st.plotly_chart(fig, use_container_width=True)
 
-        if forecast_rows:
-            st.write("**연도별 예측 중위가격**")
-            st.dataframe(pd.DataFrame(forecast_rows), use_container_width=True, hide_index=True)
-            st.caption(
-                "추세선 적합도(R²)는 이 지역의 연도별 실제 중위가격이 직선(로그 스케일) 추세와 "
-                "얼마나 잘 맞는지를 나타냅니다. 거래건수가 적은 연도가 있으면 중위가격이 들쭉날쭉해서 "
-                "예측이 부정확할 수 있어요."
-            )
+        # --- 그래프를 "눌러본" 것처럼, 지역을 선택하면 상세 정보를 보여주는 부분 ---
+        st.markdown("##### 👇 지역을 선택해서 상세 정보 보기 (그래프에서 눌러보는 것과 같아요)")
+        detail_region = st.selectbox("상세히 볼 지역", options=regions_selected, key="detail_region")
+        highlight = compute_region_highlights(region_frames[detail_region], yearly_by_region[detail_region])
+
+        if highlight is None:
+            st.info(f"{detail_region}에는 표시할 거래 데이터가 없습니다.")
+        else:
+            hc1, hc2, hc3 = st.columns(3)
+            with hc1:
+                st.metric("🔺 최고가 주택", highlight["max_name"], f"{highlight['max_price']:.2f}억원")
+            with hc2:
+                st.metric("🔻 최저가 주택", highlight["min_name"], f"{highlight['min_price']:.2f}억원")
+            with hc3:
+                st.metric("📌 지역 추세 대표 주택", highlight["rep_name"])
+                if highlight["rep_note"]:
+                    st.caption(highlight["rep_note"])
+            if detail_region in trend_r2_by_region:
+                st.caption(f"{detail_region} 추세선 적합도(R²): {trend_r2_by_region[detail_region]:.3f}")
     else:
         st.warning("선택한 지역에 표시할 데이터가 없습니다.")
-
-
-# --------------------------------------------------------------------------------------
-# 10) (보너스) 대표 매물 조건으로 모델 예측가 보기
-#     - 위에서 학습한 자치구·면적·층·연식 회귀 모델을 그대로 활용합니다.
-# --------------------------------------------------------------------------------------
-with st.expander("🔧 특정 조건(자치구·면적·층·연식)의 대표 매물 예측가 보기"):
-    pick_gu3 = st.selectbox("자치구", sorted(OFFICIAL_GU_CODE.keys()), key="direct_gu")
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        area = st.slider("건물면적(㎡)", min_value=20.0, max_value=250.0, value=84.0, step=1.0)
-    with c2:
-        floor = st.slider("층", min_value=-3, max_value=50, value=10, step=1)
-    with c3:
-        age = st.slider("연식(건축 후 경과년수)", min_value=0, max_value=60, value=15, step=1)
-
-    pred_eok = predict_price_eok(pick_gu3, area, floor, age)
-    st.markdown(
-        f"<div style='text-align:center; margin-top:1.0em;'>"
-        f"<span style='font-size:1.1em;'>🔮 {pick_gu3} · {area:.0f}㎡ · {floor}층 · 연식 {age}년 예측 가격</span><br>"
-        f"<span style='font-size:3.2em; font-weight:800; color:#e0522f;'>{pred_eok:.2f}억원</span>"
-        f"</div>",
-        unsafe_allow_html=True,
-    )
 
 st.markdown("---")
 st.caption(
