@@ -46,6 +46,21 @@ st.set_page_config(
 st.title("🏢 서울시 자치구별 아파트 가격 예측기")
 st.caption("서울 열린데이터광장 실거래가 데이터를 학습해서, 자치구·면적·층·건축년도로 아파트 가격을 예측해요.")
 
+# 테두리가 있는 st.container(border=True)를 하얀 배경 + 둥근 모서리 + 은은한 그림자 카드처럼 보이게 꾸며줍니다.
+st.markdown(
+    """
+    <style>
+    div[data-testid="stVerticalBlockBorderWrapper"] {
+        background-color: #ffffff;
+        border-radius: 20px;
+        box-shadow: 0 2px 12px rgba(0,0,0,0.08);
+        padding: 0.5em;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 
 # --------------------------------------------------------------------
 # 3) 서울 열린데이터광장 Open API 기본 설정
@@ -237,7 +252,7 @@ def csv_to_df(csv_url):
 st.sidebar.title("🔎 데이터 불러오기")
 
 # GitHub 웹 업로드는 25MB 제한이 있어서, gzip으로 압축한 .csv.gz 파일을 기본값으로 씁니다.
-DEFAULT_CSV_URL = "https://raw.githubusercontent.com/greatsong/modudata/main/data/seoul.csv.gz"
+DEFAULT_CSV_URL = "https://raw.githubusercontent.com/ok4506-bot/my-house-price/main/seoul.csv.gz"
 
 data_source = st.sidebar.radio(
     "데이터 불러오기 방식",
@@ -248,10 +263,7 @@ data_source = st.sidebar.radio(
 )
 
 if data_source == "📄 CSV 파일 (빠름)":
-    csv_url = st.sidebar.text_input(
-        "CSV 파일 주소", value=DEFAULT_CSV_URL,
-        help="gzip 압축 파일(.csv.gz)도 그대로 넣으면 자동으로 압축이 풀립니다.",
-    )
+    csv_url = DEFAULT_CSV_URL  # 주소는 고정 - 사이드바에서 직접 바꿔 입력하지 않습니다.
     if st.sidebar.button("🔄 새로고침 (캐시 지우고 다시 불러오기)", use_container_width=True):
         st.cache_data.clear()
     with st.spinner("CSV 파일을 불러오는 중..."):
@@ -387,23 +399,25 @@ def predict_price_eok(cgg_nm, arch_area, flr, age):
 # --------------------------------------------------------------------
 st.markdown("---")
 st.subheader("🔮 특정 조건으로 아파트 가격 바로 예측하기")
-pick_gu3 = st.selectbox("자치구", sorted(OFFICIAL_GU_CODE.keys()), key="direct_gu")
-c1, c2, c3 = st.columns(3)
-with c1:
-    area = st.slider("건물면적(㎡)", min_value=20.0, max_value=250.0, value=84.0, step=1.0)
-with c2:
-    floor = st.slider("층", min_value=-3, max_value=50, value=10, step=1)
-with c3:
-    age = st.slider("연식(건축 후 경과년수)", min_value=0, max_value=60, value=15, step=1)
 
-pred_eok = predict_price_eok(pick_gu3, area, floor, age)
-st.markdown(
-    f"<div style='text-align:center; margin-top:1.0em;'>"
-    f"<span style='font-size:1.1em;'>🔮 {pick_gu3} · {area:.0f}㎡ · {floor}층 · 연식 {age}년 예측 가격</span><br>"
-    f"<span style='font-size:3.2em; font-weight:800; color:#e0522f;'>{pred_eok:.2f}억원</span>"
-    f"</div>",
-    unsafe_allow_html=True,
-)
+with st.container(border=True):
+    pick_gu3 = st.selectbox("자치구", sorted(OFFICIAL_GU_CODE.keys()), key="direct_gu")
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        area = st.slider("건물면적(㎡)", min_value=20.0, max_value=250.0, value=84.0, step=1.0)
+    with c2:
+        floor = st.slider("층", min_value=-3, max_value=50, value=10, step=1)
+    with c3:
+        age = st.slider("연식(건축 후 경과년수)", min_value=0, max_value=60, value=15, step=1)
+
+    pred_eok = predict_price_eok(pick_gu3, area, floor, age)
+    st.markdown(
+        f"<div style='text-align:center; margin-top:1.0em;'>"
+        f"<span style='font-size:1.1em;'>🔮 {pick_gu3} · {area:.0f}㎡ · {floor}층 · 연식 {age}년 예측 가격</span><br>"
+        f"<span style='font-size:3.2em; font-weight:800; color:#e0522f;'>{pred_eok:.2f}억원</span>"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
 
 
 # --------------------------------------------------------------------
@@ -428,16 +442,16 @@ st.markdown("---")
 st.subheader("📈 자치구 · 법정동별 실거래가 추이 & 예측")
 st.caption(
     "2006년부터 2026년까지 연도별 물건금액 중위값(억원)을 점으로 표시하고, "
-    "전체 기간에 걸친 선형 추세선(로그 스케일)을 그은 뒤 앞으로 몇 년을 더 예측해서 이어 그립니다. "
-    "(추세선 실선=과거~현재, 점선=미래 예측)"
+    "옅은 막대로 그 해의 최소~최대 가격 범위를 함께 보여줍니다. "
+    "실선(추세선)은 전체 기간에 걸친 로그 스케일 회귀선이고, 점선은 앞으로 몇 년을 더 예측한 값입니다."
 )
 
 
 def yearly_median_table(df_subset):
-    """계약연도별 물건금액 중위값·거래건수를 구해서 표로 돌려줍니다. (실제 데이터가 있는 연도만)"""
+    """계약연도별 물건금액 중위값·최소·최대·거래건수를 구해서 표로 돌려줍니다. (실제 데이터가 있는 연도만)"""
     g = (
         df_subset.groupby("CTRT_YEAR")["PRICE_EOK"]
-        .agg(median="median", count="count")
+        .agg(median="median", min="min", max="max", count="count")
         .reset_index()
         .dropna(subset=["CTRT_YEAR", "median"])
     )
@@ -500,13 +514,17 @@ def compute_region_highlights(sub_df, yearly_df):
     }
 
 
-view_unit = st.radio("보기 단위", ["자치구별", "법정동별"], horizontal=True)
+view_unit = st.segmented_control(
+    "보기 단위", options=["자치구별", "법정동별"], default="자치구별",
+)
+if view_unit is None:  # 혹시 아무것도 선택 안 된 상태가 되면 기본값으로 되돌립니다
+    view_unit = "자치구별"
 
 if view_unit == "자치구별":
-    gu_options = sorted(apt_df["CGG_NM"].unique())
-    default_gu = gu_options[:2] if len(gu_options) >= 2 else gu_options
+    gu_options = sorted(apt_df["CGG_NM"].unique())  # 서울시 전체 자치구
     regions_selected = st.multiselect(
-        "비교할 자치구를 선택하세요 (최대 5개)", options=gu_options, default=default_gu, max_selections=5,
+        "비교할 자치구 (기본으로 서울 전체가 선택되어 있어요 — 하나씩 클릭해서 빼면 그래프에서 제외돼요)",
+        options=gu_options, default=gu_options,
     )
     region_frames = {nm: apt_df[apt_df["CGG_NM"] == nm] for nm in regions_selected}
 else:
@@ -521,7 +539,13 @@ else:
         nm: apt_df[(apt_df["CGG_NM"] == pick_gu2) & (apt_df["STDG_NM"] == nm)] for nm in regions_selected
     }
 
-horizon = st.slider("몇 년 뒤까지 예측할까요?", min_value=1, max_value=5, value=3)
+horizon = st.slider("몇 년 뒤까지 예측할까요?", min_value=1, max_value=5, value=5)
+
+if len(regions_selected) > 8:
+    st.caption(
+        f"ℹ️ 지금 {len(regions_selected)}개 지역을 한번에 표시하고 있어요. 선이 너무 많아 복잡하면, "
+        "위 목록에서 몇 개를 클릭해서 하나씩 빼보세요."
+    )
 
 if not regions_selected:
     st.info("위에서 비교하고 싶은 자치구(또는 법정동)를 1개 이상 선택해주세요.")
@@ -569,30 +593,69 @@ else:
             color = colors[i % len(colors)]
             reg_df = chart_df[chart_df["지역"] == region_name]
 
+            # 연도별 최소~최대 가격 범위를 옅은 막대로 먼저 그려서 (실제 점/추세선보다 뒤에 오도록)
+            range_df = yearly_by_region.get(region_name)
+            if range_df is not None and not range_df.empty:
+                fig.add_trace(go.Bar(
+                    x=range_df["CTRT_YEAR"], y=range_df["max"] - range_df["min"], base=range_df["min"],
+                    name=f"{region_name}·최소~최대 범위", marker=dict(color=color), opacity=0.22,
+                    legendgroup=region_name, showlegend=False, width=0.6,
+                    customdata=np.stack([range_df["min"], range_df["max"]], axis=-1),
+                    hovertemplate=(
+                        f"<b>{region_name}</b><br>연도: %{{x}}<br>"
+                        "최소가격: %{customdata[0]:.2f}억원<br>최고가격: %{customdata[1]:.2f}억원"
+                        "<extra></extra>"
+                    ),
+                ))
+
             actual = reg_df[reg_df["구분"] == "실제 중위가격"].sort_values("연도")
             fig.add_trace(go.Scatter(
-                x=actual["연도"], y=actual["가격(억원)"], mode="markers", name=f"{region_name}·실제",
+                x=actual["연도"], y=actual["가격(억원)"], mode="markers",
+                name=f"{region_name}·실제 중위가격",
                 marker=dict(size=9, color=color), legendgroup=region_name,
+                customdata=actual["거래건수"],
+                hovertemplate=(
+                    f"<b>{region_name}</b><br>연도: %{{x}}<br>"
+                    "실제 중위가격: %{y:.2f}억원<br>거래건수: %{customdata}건"
+                    "<extra></extra>"
+                ),
             ))
 
             fit_line = reg_df[reg_df["구분"] == "추세선(적합)"].sort_values("연도")
             fig.add_trace(go.Scatter(
-                x=fit_line["연도"], y=fit_line["가격(억원)"], mode="lines", name=f"{region_name}·추세선",
+                x=fit_line["연도"], y=fit_line["가격(억원)"], mode="lines",
+                name=f"{region_name}·추세선(계산값)",
                 line=dict(color=color, width=2), legendgroup=region_name,
+                hovertemplate=(
+                    f"<b>{region_name}</b><br>연도: %{{x}}<br>"
+                    "추세선 계산값(실제 데이터 아님): %{y:.2f}억원<extra></extra>"
+                ),
             ))
 
             fc_line = reg_df[reg_df["구분"] == "추세선(예측)"].sort_values("연도")
             fig.add_trace(go.Scatter(
-                x=fc_line["연도"], y=fc_line["가격(억원)"], mode="lines", name=f"{region_name}·예측",
+                x=fc_line["연도"], y=fc_line["가격(억원)"], mode="lines",
+                name=f"{region_name}·미래 예측값",
                 line=dict(color=color, width=2, dash="dash"), legendgroup=region_name,
+                hovertemplate=(
+                    f"<b>{region_name}</b><br>연도: %{{x}}<br>"
+                    "미래 예측값(추세선 연장): %{y:.2f}억원<extra></extra>"
+                ),
             ))
 
         fig.update_layout(
             height=520, margin=dict(l=10, r=10, t=30, b=10),
             xaxis_title="연도", yaxis_title="중위가격(억원)",
             legend=dict(orientation="h", yanchor="bottom", y=1.02),
+            barmode="overlay",
         )
         st.plotly_chart(fig, use_container_width=True)
+        st.caption(
+            "📌 그래프의 **점(실제 중위가격)**은 특정 아파트 한 채의 가격이 아니라, "
+            "그 해에 해당 지역에서 거래된 모든 아파트 가격의 **중위값(중간값)**입니다. "
+            "옅은 막대는 그 해의 **최소~최대 가격 범위**를 보여줍니다 (마우스를 올리면 정확한 값이 나와요). "
+            "실선(추세선)과 점선(미래 예측값)은 중위값을 바탕으로 계산한 수치이며, 실제로 거래된 값이 아닙니다."
+        )
 
         # --- 그래프를 "눌러본" 것처럼, 지역을 선택하면 상세 정보를 보여주는 부분 ---
         st.markdown("##### 👇 지역을 선택해서 상세 정보 보기 (그래프에서 눌러보는 것과 같아요)")
