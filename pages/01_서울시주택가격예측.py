@@ -593,33 +593,26 @@ else:
             color = colors[i % len(colors)]
             reg_df = chart_df[chart_df["지역"] == region_name]
 
-            # 연도별 최소~최대 가격 범위를 옅은 막대로 먼저 그려서 (실제 점/추세선보다 뒤에 오도록)
+            # 연도별 중위가격 막대 + 그 위아래로 최소~최대 범위를 에러바(막대)로 표시
             range_df = yearly_by_region.get(region_name)
             if range_df is not None and not range_df.empty:
+                upper_err = range_df["max"] - range_df["median"]
+                lower_err = range_df["median"] - range_df["min"]
                 fig.add_trace(go.Bar(
-                    x=range_df["CTRT_YEAR"], y=range_df["max"] - range_df["min"], base=range_df["min"],
-                    name=f"{region_name}·최소~최대 범위", marker=dict(color=color), opacity=0.22,
-                    legendgroup=region_name, showlegend=False, width=0.6,
-                    customdata=np.stack([range_df["min"], range_df["max"]], axis=-1),
+                    x=range_df["CTRT_YEAR"], y=range_df["median"],
+                    name=f"{region_name}·실제 중위가격", marker=dict(color=color), legendgroup=region_name,
+                    error_y=dict(
+                        type="data", symmetric=False, array=upper_err, arrayminus=lower_err,
+                        color="#e0522f", thickness=1.5, width=4,
+                    ),
+                    customdata=np.stack([range_df["min"], range_df["max"], range_df["count"]], axis=-1),
                     hovertemplate=(
                         f"<b>{region_name}</b><br>연도: %{{x}}<br>"
-                        "최소가격: %{customdata[0]:.2f}억원<br>최고가격: %{customdata[1]:.2f}억원"
+                        "중위가격: %{y:.2f}억원<br>최소가격: %{customdata[0]:.2f}억원<br>"
+                        "최고가격: %{customdata[1]:.2f}억원<br>거래건수: %{customdata[2]:.0f}건"
                         "<extra></extra>"
                     ),
                 ))
-
-            actual = reg_df[reg_df["구분"] == "실제 중위가격"].sort_values("연도")
-            fig.add_trace(go.Scatter(
-                x=actual["연도"], y=actual["가격(억원)"], mode="markers",
-                name=f"{region_name}·실제 중위가격",
-                marker=dict(size=9, color=color), legendgroup=region_name,
-                customdata=actual["거래건수"],
-                hovertemplate=(
-                    f"<b>{region_name}</b><br>연도: %{{x}}<br>"
-                    "실제 중위가격: %{y:.2f}억원<br>거래건수: %{customdata}건"
-                    "<extra></extra>"
-                ),
-            ))
 
             fit_line = reg_df[reg_df["구분"] == "추세선(적합)"].sort_values("연도")
             fig.add_trace(go.Scatter(
@@ -647,14 +640,13 @@ else:
             height=520, margin=dict(l=10, r=10, t=30, b=10),
             xaxis_title="연도", yaxis_title="중위가격(억원)",
             legend=dict(orientation="h", yanchor="bottom", y=1.02),
-            barmode="overlay",
+            barmode="group",
         )
         st.plotly_chart(fig, use_container_width=True)
         st.caption(
-            "📌 그래프의 **점(실제 중위가격)**은 특정 아파트 한 채의 가격이 아니라, "
-            "그 해에 해당 지역에서 거래된 모든 아파트 가격의 **중위값(중간값)**입니다. "
-            "옅은 막대는 그 해의 **최소~최대 가격 범위**를 보여줍니다 (마우스를 올리면 정확한 값이 나와요). "
-            "실선(추세선)과 점선(미래 예측값)은 중위값을 바탕으로 계산한 수치이며, 실제로 거래된 값이 아닙니다."
+            "📌 **막대**는 그 해에 거래된 아파트 가격의 **중위값(중간값)**이고, 막대 위아래로 뻗은 "
+            "**빨간 선(에러바)**은 그 해의 **최소~최대 가격 범위**입니다 (특정 아파트 한 채가 아니에요). "
+            "실선(추세선)과 점선(미래 예측값)은 중위값을 바탕으로 계산한 참고용 수치입니다."
         )
 
         # --- 그래프를 "눌러본" 것처럼, 지역을 선택하면 상세 정보를 보여주는 부분 ---
