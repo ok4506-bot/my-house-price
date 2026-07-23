@@ -522,11 +522,16 @@ if view_unit is None:  # 혹시 아무것도 선택 안 된 상태가 되면 기
 
 if view_unit == "자치구별":
     gu_options = sorted(apt_df["CGG_NM"].unique())  # 서울시 전체 자치구
+    default_gu = ["강남구"] if "강남구" in gu_options else gu_options[:1]
     regions_selected = st.multiselect(
-        "비교할 자치구 (기본으로 서울 전체가 선택되어 있어요 — 하나씩 클릭해서 빼면 그래프에서 제외돼요)",
-        options=gu_options, default=gu_options,
+        "비교할 자치구 (하나씩 클릭해서 추가하거나 빼면 그래프에 바로 반영돼요)",
+        options=gu_options, default=default_gu,
     )
     region_frames = {nm: apt_df[apt_df["CGG_NM"] == nm] for nm in regions_selected}
+    detail_options = gu_options  # 상세 정보 보기는 그래프 선택과 상관없이 전체 자치구 대상
+
+    def get_region_df(nm):
+        return apt_df[apt_df["CGG_NM"] == nm]
 else:
     pick_gu2 = st.selectbox("자치구", sorted(apt_df["CGG_NM"].unique()), key="trend_gu")
     dong_options2 = sorted(apt_df.loc[apt_df["CGG_NM"] == pick_gu2, "STDG_NM"].dropna().unique())
@@ -538,6 +543,10 @@ else:
     region_frames = {
         nm: apt_df[(apt_df["CGG_NM"] == pick_gu2) & (apt_df["STDG_NM"] == nm)] for nm in regions_selected
     }
+    detail_options = dong_options2  # 상세 정보 보기는 선택한 자치구 안의 전체 법정동 대상
+
+    def get_region_df(nm):
+        return apt_df[(apt_df["CGG_NM"] == pick_gu2) & (apt_df["STDG_NM"] == nm)]
 
 horizon = st.slider("몇 년 뒤까지 예측할까요?", min_value=1, max_value=5, value=5)
 
@@ -588,9 +597,11 @@ else:
     if chart_rows:
         chart_df = pd.DataFrame(chart_rows)
         fig = go.Figure()
-        colors = px.colors.qualitative.Set2
+        # 막대는 파란색 계열로 통일 (지역이 여러 개면 진하기를 다르게 해서 구분)
+        blue_shades = ["#1f4e79", "#2e75b6", "#5b9bd5", "#9dc3e6", "#bdd7ee",
+                       "#0d3d6e", "#3d85c6", "#6fa8dc", "#a4c2f4", "#cfe2f3"]
         for i, region_name in enumerate(regions_selected):
-            color = colors[i % len(colors)]
+            color = blue_shades[i % len(blue_shades)]
             reg_df = chart_df[chart_df["지역"] == region_name]
 
             # 연도별 중위가격 막대 + 그 위아래로 최소~최대 범위를 에러바(막대)로 표시
@@ -601,6 +612,9 @@ else:
                 fig.add_trace(go.Bar(
                     x=range_df["CTRT_YEAR"], y=range_df["median"],
                     name=f"{region_name}·실제 중위가격", marker=dict(color=color), legendgroup=region_name,
+                    text=[f"{v:.1f}" for v in range_df["median"]],
+                    textposition="outside",  # 막대 위로 값이 뜨도록
+                    cliponaxis=False,
                     error_y=dict(
                         type="data", symmetric=False, array=upper_err, arrayminus=lower_err,
                         color="#e0522f", thickness=1.5, width=4,
@@ -613,6 +627,7 @@ else:
                         "<extra></extra>"
                     ),
                 ))
+
 
             fit_line = reg_df[reg_df["구분"] == "추세선(적합)"].sort_values("연도")
             fig.add_trace(go.Scatter(
@@ -649,27 +664,32 @@ else:
             "실선(추세선)과 점선(미래 예측값)은 중위값을 바탕으로 계산한 참고용 수치입니다."
         )
 
-        # --- 그래프를 "눌러본" 것처럼, 지역을 선택하면 상세 정보를 보여주는 부분 ---
-        st.markdown("##### 👇 지역을 선택해서 상세 정보 보기 (그래프에서 눌러보는 것과 같아요)")
-        detail_region = st.selectbox("상세히 볼 지역", options=regions_selected, key="detail_region")
-        highlight = compute_region_highlights(region_frames[detail_region], yearly_by_region[detail_region])
-
-        if highlight is None:
-            st.info(f"{detail_region}에는 표시할 거래 데이터가 없습니다.")
-        else:
-            hc1, hc2, hc3 = st.columns(3)
-            with hc1:
-                st.metric("🔺 최고가 주택", highlight["max_name"], f"{highlight['max_price']:.2f}억원")
-            with hc2:
-                st.metric("🔻 최저가 주택", highlight["min_name"], f"{highlight['min_price']:.2f}억원")
-            with hc3:
-                st.metric("📌 지역 추세 대표 주택", highlight["rep_name"])
-                if highlight["rep_note"]:
-                    st.caption(highlight["rep_note"])
-            if detail_region in trend_r2_by_region:
-                st.caption(f"{detail_region} 추세선 적합도(R²): {trend_r2_by_region[detail_region]:.3f}")
     else:
         st.warning("선택한 지역에 표시할 데이터가 없습니다.")
+
+    # --- 그래프를 "눌러본" 것처럼, 지역을 선택하면 상세 정보를 보여주는 부분 ---
+    # (그래프에 표시된 지역뿐 아니라 전체 자치구/법정동 중에서 골라볼 수 있습니다)
+    st.markdown("##### 👇 지역을 선택해서 상세 정보 보기 (그래프에서 눌러보는 것과 같아요)")
+    detail_region = st.selectbox("상세히 볼 지역 (전체 목록에서 선택 가능)", options=detail_options, key="detail_region")
+    detail_df = get_region_df(detail_region)
+    detail_yearly = yearly_median_table(detail_df)
+    highlight = compute_region_highlights(detail_df, detail_yearly)
+
+    if highlight is None:
+        st.info(f"{detail_region}에는 표시할 거래 데이터가 없습니다.")
+    else:
+        hc1, hc2, hc3 = st.columns(3)
+        with hc1:
+            st.metric("🔺 최고가 주택", highlight["max_name"], f"{highlight['max_price']:.2f}억원")
+        with hc2:
+            st.metric("🔻 최저가 주택", highlight["min_name"], f"{highlight['min_price']:.2f}억원")
+        with hc3:
+            st.metric("📌 지역 추세 대표 주택", highlight["rep_name"])
+            if highlight["rep_note"]:
+                st.caption(highlight["rep_note"])
+        _, detail_r2 = fit_year_trend(detail_yearly)
+        if detail_r2 is not None:
+            st.caption(f"{detail_region} 추세선 적합도(R²): {detail_r2:.3f}")
 
 st.markdown("---")
 st.caption(
