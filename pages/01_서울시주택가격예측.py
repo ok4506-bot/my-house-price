@@ -26,6 +26,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import requests
 import streamlit as st
+import streamlit.components.v1 as components
 from sklearn.compose import ColumnTransformer
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import r2_score
@@ -489,10 +490,12 @@ R2_HELP_TEXT = (
 
 
 # --------------------------------------------------------------------
-# 9) 두 개의 탭으로 나눠서, 섹션 사이 간격 문제를 해결합니다
+# 9) 세 개의 탭으로 나눠서, 섹션 사이 간격 문제를 해결합니다
 # --------------------------------------------------------------------
 st.markdown("---")
-tab_trend, tab_predict = st.tabs(["📈 자치구·법정동별 추이 & 예측", "🔮 조건별 가격 예측"])
+tab_trend, tab_predict, tab_draw = st.tabs(
+    ["📈 자치구·법정동별 추이 & 예측", "🔮 조건별 가격 예측", "🏠 내 꿈의 집 그리기"]
+)
 
 with tab_predict:
     st.subheader("🔮 특정 조건으로 아파트 가격 바로 예측하기")
@@ -570,6 +573,7 @@ with tab_trend:
             return apt_df[(apt_df["CGG_NM"] == pick_gu2) & (apt_df["STDG_NM"] == nm)]
 
     horizon = st.slider("몇 년 뒤까지 예측할까요?", min_value=1, max_value=5, value=5)
+    show_errorbar = st.checkbox("🔴 최소~최대 범위(빨간 에러바) 표시", value=True)
 
     if len(regions_selected) > 8:
         st.caption(
@@ -618,32 +622,32 @@ with tab_trend:
         if chart_rows:
             chart_df = pd.DataFrame(chart_rows)
             fig = go.Figure()
-            # 막대는 파란색 계열로 통일하고, "서울시 전체"는 회색으로 구분해서 기준선처럼 보이게 합니다.
-            blue_shades = ["#1f4e79", "#2e75b6", "#5b9bd5", "#9dc3e6", "#bdd7ee",
-                           "#0d3d6e", "#3d85c6", "#6fa8dc", "#a4c2f4", "#cfe2f3"]
+            # 자치구마다 눈에 띄게 다른 색을 쓰고, "서울시 전체"만 회색으로 구분해서 기준선처럼 보이게 합니다.
+            distinct_colors = px.colors.qualitative.Alphabet  # 26가지 색상 - 서울 25개 구 + 여유분
             SEOUL_ALL_COLOR = "#8c8c8c"
-            blue_idx = 0
+            color_idx = 0
             for region_name in regions_selected:
                 if region_name == "서울시 전체":
                     color = SEOUL_ALL_COLOR
                 else:
-                    color = blue_shades[blue_idx % len(blue_shades)]
-                    blue_idx += 1
+                    color = distinct_colors[color_idx % len(distinct_colors)]
+                    color_idx += 1
                 reg_df = chart_df[chart_df["지역"] == region_name]
 
-                # 연도별 중위가격은 점으로 표시하고, 그 위아래로 최소~최대 범위를 에러바로 표시
+                # 연도별 중위가격은 점으로 표시하고, 체크박스가 켜져 있으면 최소~최대 범위를 에러바로 함께 표시
                 range_df = yearly_by_region.get(region_name)
                 if range_df is not None and not range_df.empty:
                     upper_err = range_df["max"] - range_df["median"]
                     lower_err = range_df["median"] - range_df["min"]
+                    error_y_conf = dict(
+                        type="data", symmetric=False, array=upper_err, arrayminus=lower_err,
+                        color="#e0522f", thickness=1.5, width=4,
+                    ) if show_errorbar else None
                     fig.add_trace(go.Scatter(
                         x=range_df["CTRT_YEAR"], y=range_df["median"], mode="markers+lines",
                         name=f"{region_name}·실제 중위가격", marker=dict(color=color, size=9),
                         line=dict(color=color, width=1), legendgroup=region_name,
-                        error_y=dict(
-                            type="data", symmetric=False, array=upper_err, arrayminus=lower_err,
-                            color="#e0522f", thickness=1.5, width=4,
-                        ),
+                        error_y=error_y_conf,
                         customdata=np.stack([range_df["min"], range_df["max"], range_df["count"]], axis=-1),
                         hovertemplate=(
                             f"<b>{region_name}</b><br>연도: %{{x}}<br>"
@@ -717,6 +721,139 @@ with tab_trend:
             _, detail_r2 = fit_year_trend(detail_yearly)
             if detail_r2 is not None:
                 st.caption(f"{detail_region} 추세선 적합도(R²): {detail_r2:.3f}")
+
+with tab_draw:
+    st.subheader("🏠 내가 살고 싶은 집을 그려보세요")
+    st.caption(
+        "아래 하얀 캔버스에 마우스(또는 손가락)로 살고 싶은 집을 그리고 "
+        "'비처럼 내리기' 버튼을 누르면, 그 그림이 화면 아래로 계속 떨어져요."
+    )
+
+    draw_house_html = """
+    <div style="text-align:center; font-family:sans-serif;">
+      <canvas id="drawCanvas" width="360" height="260"
+        style="border:2px solid #333; border-radius:10px; background:#ffffff; cursor:crosshair; touch-action:none;">
+      </canvas>
+      <br><br>
+      <button id="clearBtn" style="padding:8px 16px; margin:4px; border-radius:8px; border:1px solid #999; cursor:pointer;">
+        🧹 지우기
+      </button>
+      <button id="dropBtn" style="padding:8px 16px; margin:4px; border-radius:8px; border:none;
+        background:#e0522f; color:white; font-weight:700; cursor:pointer;">
+        🏠 비처럼 내리기!
+      </button>
+      <button id="stopBtn" style="padding:8px 16px; margin:4px; border-radius:8px; border:1px solid #999; cursor:pointer;">
+        ⏹ 멈추기
+      </button>
+      <br><br>
+      <canvas id="fallCanvas" width="720" height="420"
+        style="border:2px solid #333; border-radius:14px;
+               background:linear-gradient(#bde0fe 0%, #eaf6ff 100%);">
+      </canvas>
+    </div>
+    <script>
+    (function () {
+      const draw = document.getElementById('drawCanvas');
+      const dctx = draw.getContext('2d');
+      dctx.fillStyle = '#ffffff';
+      dctx.fillRect(0, 0, draw.width, draw.height);
+      dctx.lineWidth = 5;
+      dctx.lineCap = 'round';
+      dctx.lineJoin = 'round';
+      dctx.strokeStyle = '#333333';
+
+      let drawing = false, lastX = 0, lastY = 0;
+
+      function getPos(e) {
+        const rect = draw.getBoundingClientRect();
+        const touch = e.touches && e.touches[0];
+        const clientX = touch ? touch.clientX : e.clientX;
+        const clientY = touch ? touch.clientY : e.clientY;
+        return [clientX - rect.left, clientY - rect.top];
+      }
+      function start(e) { drawing = true; [lastX, lastY] = getPos(e); e.preventDefault(); }
+      function move(e) {
+        if (!drawing) return;
+        const [x, y] = getPos(e);
+        dctx.beginPath();
+        dctx.moveTo(lastX, lastY);
+        dctx.lineTo(x, y);
+        dctx.stroke();
+        lastX = x; lastY = y;
+        e.preventDefault();
+      }
+      function end() { drawing = false; }
+
+      draw.addEventListener('mousedown', start);
+      draw.addEventListener('mousemove', move);
+      window.addEventListener('mouseup', end);
+      draw.addEventListener('touchstart', start, {passive: false});
+      draw.addEventListener('touchmove', move, {passive: false});
+      draw.addEventListener('touchend', end);
+
+      document.getElementById('clearBtn').onclick = function () {
+        dctx.fillStyle = '#ffffff';
+        dctx.fillRect(0, 0, draw.width, draw.height);
+      };
+
+      const fall = document.getElementById('fallCanvas');
+      const fctx = fall.getContext('2d');
+      let drops = [];
+      let animId = null;
+      let spawnTimer = null;
+      let img = new Image();
+
+      function spawnDrop() {
+        const size = 45 + Math.random() * 35;
+        drops.push({
+          x: Math.random() * (fall.width - size),
+          y: -size,
+          speed: 1.2 + Math.random() * 2.3,
+          size: size,
+          rot: (Math.random() - 0.5) * 0.5,
+          spin: (Math.random() - 0.5) * 0.01,
+        });
+      }
+
+      function animate() {
+        fctx.clearRect(0, 0, fall.width, fall.height);
+        for (const d of drops) {
+          fctx.save();
+          fctx.translate(d.x + d.size / 2, d.y + d.size / 2);
+          fctx.rotate(d.rot);
+          fctx.drawImage(img, -d.size / 2, -d.size / 2, d.size, d.size);
+          fctx.restore();
+          d.y += d.speed;
+          d.rot += d.spin;
+        }
+        drops = drops.filter(d => d.y < fall.height + d.size);
+        animId = requestAnimationFrame(animate);
+      }
+
+      document.getElementById('dropBtn').onclick = function () {
+        img = new Image();
+        img.onload = function () {
+          if (spawnTimer) clearInterval(spawnTimer);
+          drops = [];
+          spawnTimer = setInterval(spawnDrop, 300);
+          if (!animId) animate();
+        };
+        img.src = draw.toDataURL();
+      };
+
+      document.getElementById('stopBtn').onclick = function () {
+        if (spawnTimer) clearInterval(spawnTimer);
+        spawnTimer = null;
+        if (animId) cancelAnimationFrame(animId);
+        animId = null;
+        drops = [];
+        fctx.clearRect(0, 0, fall.width, fall.height);
+      };
+    })();
+    </script>
+    """
+    components.html(draw_house_html, height=780, scrolling=False)
+
 
 st.markdown("---")
 st.caption(
