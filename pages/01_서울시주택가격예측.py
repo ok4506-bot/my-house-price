@@ -47,6 +47,7 @@ st.title("🏢 서울시 자치구별 아파트 가격 예측기")
 st.caption("서울 열린데이터광장 실거래가 데이터를 학습해서, 자치구·면적·층·건축년도로 아파트 가격을 예측해요.")
 
 # 테두리가 있는 st.container(border=True)를 하얀 배경 + 둥근 모서리 + 은은한 그림자 카드처럼 보이게 꾸며줍니다.
+# 그리고 상단 탭(조건별 예측 / 추이·예측) 버튼이 잘 보이도록 크게, 진하게 스타일을 입힙니다.
 st.markdown(
     """
     <style>
@@ -55,6 +56,23 @@ st.markdown(
         border-radius: 20px;
         box-shadow: 0 2px 12px rgba(0,0,0,0.08);
         padding: 0.5em;
+    }
+    div[data-testid="stTabs"] div[role="tablist"] {
+        gap: 8px;
+        border-bottom: 2px solid #e6e6e6;
+    }
+    div[data-testid="stTabs"] button[role="tab"] {
+        font-size: 1.15em;
+        font-weight: 700;
+        padding: 0.7em 1.3em;
+        border-radius: 12px 12px 0 0;
+        background-color: #f2f2f2;
+        color: #555555;
+    }
+    div[data-testid="stTabs"] button[role="tab"][aria-selected="true"] {
+        background-color: #ffece6;
+        color: #e0522f;
+        border-bottom: 3px solid #e0522f;
     }
     </style>
     """,
@@ -474,7 +492,7 @@ R2_HELP_TEXT = (
 # 9) 두 개의 탭으로 나눠서, 섹션 사이 간격 문제를 해결합니다
 # --------------------------------------------------------------------
 st.markdown("---")
-tab_predict, tab_trend = st.tabs(["🔮 조건별 가격 예측", "📈 자치구·법정동별 추이 & 예측"])
+tab_trend, tab_predict = st.tabs(["📈 자치구·법정동별 추이 & 예측", "🔮 조건별 가격 예측"])
 
 with tab_predict:
     st.subheader("🔮 특정 조건으로 아파트 가격 바로 예측하기")
@@ -518,17 +536,23 @@ with tab_trend:
         view_unit = "자치구별"
 
     if view_unit == "자치구별":
+        SEOUL_ALL = "서울시 전체"
         gu_options = sorted(apt_df["CGG_NM"].unique())  # 서울시 전체 자치구
-        default_gu = ["강남구"] if "강남구" in gu_options else gu_options[:1]
+        display_options = [SEOUL_ALL] + gu_options  # "서울시 전체"를 맨 앞에 고정
+        default_gu = [SEOUL_ALL] + (["강남구"] if "강남구" in gu_options else gu_options[:1])
         regions_selected = st.multiselect(
-            "비교할 자치구 (하나씩 클릭해서 추가하거나 빼면 그래프에 바로 반영돼요)",
-            options=gu_options, default=default_gu,
+            "비교할 자치구 (기본으로 '서울시 전체'가 함께 표시돼요 — 하나씩 클릭해서 추가/제거할 수 있어요)",
+            options=display_options, default=default_gu,
         )
-        region_frames = {nm: apt_df[apt_df["CGG_NM"] == nm] for nm in regions_selected}
-        detail_options = gu_options  # 상세 정보 보기는 그래프 선택과 상관없이 전체 자치구 대상
+
+        def region_df(nm):
+            return apt_df if nm == SEOUL_ALL else apt_df[apt_df["CGG_NM"] == nm]
+
+        region_frames = {nm: region_df(nm) for nm in regions_selected}
+        detail_options = display_options  # 상세 정보 보기도 "서울시 전체" 포함, 그래프 선택과 무관하게 전체 대상
 
         def get_region_df(nm):
-            return apt_df[apt_df["CGG_NM"] == nm]
+            return region_df(nm)
     else:
         pick_gu2 = st.selectbox("자치구", sorted(apt_df["CGG_NM"].unique()), key="trend_gu")
         dong_options2 = sorted(apt_df.loc[apt_df["CGG_NM"] == pick_gu2, "STDG_NM"].dropna().unique())
@@ -594,11 +618,17 @@ with tab_trend:
         if chart_rows:
             chart_df = pd.DataFrame(chart_rows)
             fig = go.Figure()
-            # 막대는 파란색 계열로 통일 (지역이 여러 개면 진하기를 다르게 해서 구분)
+            # 막대는 파란색 계열로 통일하고, "서울시 전체"는 회색으로 구분해서 기준선처럼 보이게 합니다.
             blue_shades = ["#1f4e79", "#2e75b6", "#5b9bd5", "#9dc3e6", "#bdd7ee",
                            "#0d3d6e", "#3d85c6", "#6fa8dc", "#a4c2f4", "#cfe2f3"]
-            for i, region_name in enumerate(regions_selected):
-                color = blue_shades[i % len(blue_shades)]
+            SEOUL_ALL_COLOR = "#8c8c8c"
+            blue_idx = 0
+            for region_name in regions_selected:
+                if region_name == "서울시 전체":
+                    color = SEOUL_ALL_COLOR
+                else:
+                    color = blue_shades[blue_idx % len(blue_shades)]
+                    blue_idx += 1
                 reg_df = chart_df[chart_df["지역"] == region_name]
 
                 # 연도별 중위가격은 점으로 표시하고, 그 위아래로 최소~최대 범위를 에러바로 표시
