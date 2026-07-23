@@ -186,11 +186,9 @@ def fetch_all(api_key, years, gu_cd_list, max_pages_per_combo):
     return all_rows, errors, gu_last_error
 
 
-def rows_to_df(rows):
-    """API가 준 리스트를 pandas DataFrame으로 바꾸고, 필요한 전처리를 합니다."""
-    if not rows:
-        return pd.DataFrame(columns=list(COLUMN_TYPES.keys()))
-    df = pd.DataFrame(rows)
+def postprocess_df(df):
+    """API 원래 컬럼 이름(CGG_NM 등)을 가진 DataFrame에 공통 전처리를 적용합니다.
+    (API로 막 받아온 데이터든, CSV에서 불러온 데이터든 이 함수를 거치면 똑같은 형태가 됩니다)"""
     for col, typ in COLUMN_TYPES.items():
         if col not in df.columns:
             df[col] = np.nan
@@ -207,57 +205,101 @@ def rows_to_df(rows):
     return df
 
 
-# --------------------------------------------------------------------
-# 5) 인증키 확인 (Secrets에서만 로드, 화면에는 노출하지 않음)
-# --------------------------------------------------------------------
-api_key = st.secrets.get("SEOUL_API_KEY", "") if hasattr(st, "secrets") else ""
+def rows_to_df(rows):
+    """API가 준 리스트(list of dict)를 DataFrame으로 바꿉니다."""
+    if not rows:
+        return pd.DataFrame(columns=list(COLUMN_TYPES.keys()))
+    return postprocess_df(pd.DataFrame(rows))
 
-if not api_key:
-    st.error(
-        "🔑 서울 열린데이터광장 인증키가 설정되어 있지 않아요.\n\n"
-        "앱을 배포한 곳의 **Settings → Secrets**에 아래처럼 추가해주세요.\n\n"
-        "```toml\nSEOUL_API_KEY = \"발급받은_인증키\"\n```"
+
+# CSV 파일의 한글 컬럼명 -> API 원래 컬럼명으로 되돌리는 매핑
+# (colab_fetch_seoul_csv.py 로 만든 seoul.csv 파일과 짝을 이룹니다)
+CSV_COLUMN_TO_API = {
+    "자치구": "CGG_NM", "법정동": "STDG_NM", "건물명": "BLDG_NM", "계약일": "CTRT_DAY",
+    "물건금액": "THING_AMT", "건물면적": "ARCH_AREA", "층": "FLR", "건축년도": "ARCH_YR",
+    "건물용도": "BLDG_USG", "취소일": "RTRCN_DAY",
+}
+
+
+@st.cache_data(show_spinner=False, ttl=6 * 3600)
+def csv_to_df(csv_url):
+    """미리 만들어둔 CSV(예: colab_fetch_seoul_csv.py로 생성)를 읽어옵니다. API 호출 없이 빠릅니다.
+    주소가 .gz로 끝나면 pandas가 자동으로 압축을 풀어서 읽어주기 때문에
+    압축 파일(seoul.csv.gz)이든 일반 CSV(seoul.csv)든 코드 변경 없이 그대로 동작합니다."""
+    raw = pd.read_csv(csv_url, dtype=str)
+    raw = raw.rename(columns=CSV_COLUMN_TO_API)
+    return postprocess_df(raw)
+
+
+# --------------------------------------------------------------------
+# 5) 사이드바 - 데이터 불러오기 방식 선택
+# --------------------------------------------------------------------
+st.sidebar.title("🔎 데이터 불러오기")
+
+# GitHub 웹 업로드는 25MB 제한이 있어서, gzip으로 압축한 .csv.gz 파일을 기본값으로 씁니다.
+DEFAULT_CSV_URL = "https://raw.githubusercontent.com/greatsong/modudata/main/data/seoul.csv.gz"
+
+data_source = st.sidebar.radio(
+    "데이터 불러오기 방식",
+    ["📄 CSV 파일 (빠름)", "🌐 Open API 직접 호출 (느림)"],
+    help="CSV 모드는 미리 colab_fetch_seoul_csv.py로 받아둔 파일을 그대로 읽어서 훨씬 빠릅니다. "
+         "API 모드는 그때그때 서울 열린데이터광장에서 직접 받아오기 때문에 2006~2026년 전체를 "
+         "조회하면 시간이 오래 걸립니다.",
+)
+
+if data_source == "📄 CSV 파일 (빠름)":
+    csv_url = st.sidebar.text_input(
+        "CSV 파일 주소", value=DEFAULT_CSV_URL,
+        help="gzip 압축 파일(.csv.gz)도 그대로 넣으면 자동으로 압축이 풀립니다.",
     )
-    st.stop()
-
-
-# --------------------------------------------------------------------
-# 6) 사이드바 - 데이터 조회 조건
-# --------------------------------------------------------------------
-st.sidebar.title("🔎 조회 조건")
-
-years = st.sidebar.slider(
-    "계약연도 범위", min_value=EARLIEST_YEAR, max_value=CURRENT_YEAR,
-    value=(EARLIEST_YEAR, CURRENT_YEAR),
-    help="기본값은 2006~2026년 전체 기간입니다. 기간이 넓을수록 추세 그래프는 풍부해지지만, "
-         "API 호출 수와 대기 시간이 늘어납니다. 로딩이 너무 느리면 기간을 좁혀보세요.",
-)
-
-gu_selected = st.sidebar.multiselect(
-    "자치구 필터 (미선택 시 서울 전체 25개 구)",
-    options=sorted(OFFICIAL_GU_CODE.keys()), default=[],
-)
-
-max_pages = st.sidebar.number_input(
-    "연도·자치구 조합당 최대 페이지 수 (1페이지=최대 1,000건)",
-    min_value=1, max_value=200, value=5,
-    help="값이 클수록 학습 데이터가 많아지지만 (연도 수 × 자치구 수 × 이 값)만큼 API 호출이 늘어납니다.",
-)
-
-if st.sidebar.button("🔄 새로고침 (캐시 지우고 다시 조회)", use_container_width=True):
-    st.cache_data.clear()
-
-if gu_selected:
-    effective_gu_cd_list = [OFFICIAL_GU_CODE[nm] for nm in gu_selected]
+    if st.sidebar.button("🔄 새로고침 (캐시 지우고 다시 불러오기)", use_container_width=True):
+        st.cache_data.clear()
+    with st.spinner("CSV 파일을 불러오는 중..."):
+        try:
+            raw_df = csv_to_df(csv_url)
+            fetch_errors, gu_last_error = [], {}
+        except Exception as e:
+            st.error(
+                f"🚨 CSV 파일을 불러오지 못했어요: {e}\n\n"
+                "주소가 올바른지, 파일이 실제로 그 경로에 있는지 확인해주세요. "
+                "(colab_fetch_seoul_csv.py를 먼저 실행해서 seoul.csv를 만든 뒤, "
+                "GitHub 등에 업로드했는지 확인하세요.)"
+            )
+            st.stop()
 else:
-    effective_gu_cd_list = list(OFFICIAL_GU_CODE.values())
+    # API 모드에서만 인증키가 필요합니다.
+    api_key = st.secrets.get("SEOUL_API_KEY", "") if hasattr(st, "secrets") else ""
+    if not api_key:
+        st.error(
+            "🔑 서울 열린데이터광장 인증키가 설정되어 있지 않아요.\n\n"
+            "앱을 배포한 곳의 **Settings → Secrets**에 아래처럼 추가해주세요.\n\n"
+            "```toml\nSEOUL_API_KEY = \"발급받은_인증키\"\n```"
+        )
+        st.stop()
 
-year_list = [str(y) for y in range(years[0], years[1] + 1)]
-with st.spinner("서울 열린데이터광장에서 실거래가 데이터를 불러오는 중..."):
-    rows, fetch_errors, gu_last_error = fetch_all(
-        api_key, tuple(year_list), tuple(effective_gu_cd_list), max_pages
+    gu_selected_api = st.sidebar.multiselect(
+        "자치구 필터 (미선택 시 서울 전체 25개 구)",
+        options=sorted(OFFICIAL_GU_CODE.keys()), default=[],
     )
-raw_df = rows_to_df(rows)
+    max_pages = st.sidebar.number_input(
+        "연도·자치구 조합당 최대 페이지 수 (1페이지=최대 1,000건)",
+        min_value=1, max_value=200, value=5,
+        help="값이 클수록 학습 데이터가 많아지지만 (연도 수 × 자치구 수 × 이 값)만큼 API 호출이 늘어납니다.",
+    )
+    if st.sidebar.button("🔄 새로고침 (캐시 지우고 다시 조회)", use_container_width=True):
+        st.cache_data.clear()
+
+    if gu_selected_api:
+        effective_gu_cd_list = [OFFICIAL_GU_CODE[nm] for nm in gu_selected_api]
+    else:
+        effective_gu_cd_list = list(OFFICIAL_GU_CODE.values())
+
+    year_list_all = [str(y) for y in range(EARLIEST_YEAR, CURRENT_YEAR + 1)]
+    with st.spinner("서울 열린데이터광장에서 실거래가 데이터를 불러오는 중... (시간이 꽤 걸릴 수 있어요)"):
+        rows, fetch_errors, gu_last_error = fetch_all(
+            api_key, tuple(year_list_all), tuple(effective_gu_cd_list), max_pages
+        )
+    raw_df = rows_to_df(rows)
 
 if gu_last_error:
     failed_names = ", ".join(sorted(CODE_TO_GU_NAME.get(cd, cd) for cd in gu_last_error))
@@ -269,6 +311,23 @@ if fetch_errors:
     with st.expander(f"오류 상세 보기 ({len(fetch_errors)}건)"):
         for e in fetch_errors:
             st.write("- ", e)
+
+# --------------------------------------------------------------------
+# 5-1) 불러온 데이터에 적용하는 공통 필터 (CSV/API 어느 쪽으로 불러왔든 동일하게 동작)
+# --------------------------------------------------------------------
+st.sidebar.markdown("---")
+st.sidebar.subheader("📅 표시 범위 필터")
+years = st.sidebar.slider(
+    "계약연도 범위", min_value=EARLIEST_YEAR, max_value=CURRENT_YEAR,
+    value=(EARLIEST_YEAR, CURRENT_YEAR),
+)
+gu_selected = st.sidebar.multiselect(
+    "자치구 필터 (미선택 시 전체)", options=sorted(OFFICIAL_GU_CODE.keys()), default=[],
+)
+
+raw_df = raw_df[(raw_df["CTRT_YEAR"] >= years[0]) & (raw_df["CTRT_YEAR"] <= years[1])]
+if gu_selected:
+    raw_df = raw_df[raw_df["CGG_NM"].isin(gu_selected)]
 
 # 아파트만 사용 + 학습에 꼭 필요한 값이 없는 행은 제외
 apt_df = raw_df[raw_df["BLDG_USG"] == "아파트"].copy()
